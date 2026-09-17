@@ -1,0 +1,10 @@
+.env.local
+
+.venv/
+data/
+web/foliate-js/
+__pycache__/
+*.pyc
+agents/plans
+.agents/
+.pi/

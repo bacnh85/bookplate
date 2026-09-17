@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bookplate — your ebook library</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<section id="auth-view" hidden>
+  <h1 class="wordmark">Bookplate<span>.</span></h1>
+  <form id="auth-form">
+    <input type="email" id="auth-email" placeholder="Email" autocomplete="username" required>
+    <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
+    <div class="error-line" id="auth-error" role="alert"></div>
+    <button class="btn-primary" id="auth-submit" type="submit">Sign in</button>
+    <button class="btn-ghost" id="auth-toggle" type="button">New here? Create an account</button>
+  </form>
+</section>
+
+<section id="app-view" hidden>
+  <header>
+    <h1 class="wordmark">Bookplate<span>.</span></h1>
+    <button class="btn-ghost active" id="tab-shelf" type="button">My shelf</button>
+    <button class="btn-ghost" id="tab-find" type="button" title="Search Z-Library">Find books</button>
+    <span class="spacer"></span>
+    <button class="btn-primary" id="upload-btn" type="button">Add books</button>
+    <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
+    <span id="user-email" class="result-sub"></span>
+    <button class="btn-ghost" id="logout-btn" type="button">Sign out</button>
+  </header>
+
+  <main>
+    <div id="shelf-view">
+      <div class="toolbar">
+        <input type="text" id="search" placeholder="Search title, author, category…" autocomplete="off">
+      </div>
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="shelf-empty" hidden>Your shelf is empty.<small>Add books, or use Find books to pull them from Z-Library.</small></div>
+    </div>
+
+    <div id="find-view" hidden>
+      <div class="toolbar">
+        <input type="text" id="zlib-search" placeholder="Search Z-Library…" autocomplete="off">
+      </div>
+      <div class="error-line" id="zlib-error"></div>
+      <div class="results" id="zlib-results"></div>
+    </div>
+  </main>
+</section>
+
+<dialog id="share-dialog">
+  <form method="dialog">
+    <h2>Share this book</h2>
+    <input type="email" id="share-email" placeholder="user@email" required>
+    <div class="error-line" id="share-error"></div>
+    <div style="display:flex; gap:8px; justify-content:flex-end">
+      <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+      <button class="btn-primary" value="ok" id="share-ok" type="button">Share</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

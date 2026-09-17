@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Reader — Bookplate</title>
+<link rel="stylesheet" href="/app.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
+  #toolbar {
+    display: flex; gap: 8px; align-items: center; padding: 8px 16px;
+    background: var(--card); border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  }
+  #title { flex: 1; font-family: var(--font-display); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #viewer { flex: 1; position: relative; overflow: hidden; }
+  #viewer foliate-view { display: block; width: 100%; height: 100%; }
+  #viewer iframe { width: 100%; height: 100%; border: 0; }
+  .zone { position: absolute; top: 0; bottom: 0; width: 25%; z-index: 5; }
+  #zone-left { left: 0; } #zone-right { right: 0; }
+  #progress { font-size: var(--fs-sm); color: var(--ink-soft); min-width: 3.5em; text-align: right; }
+  select { font: inherit; max-width: 180px; }
+  #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--ink-soft); font-family: var(--font-display); }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <a class="btn-ghost" href="/" style="text-decoration:none; padding:8px 16px; display:inline-block">← Bookplate</a>
+  <div id="title">…</div>
+  <select id="toc" hidden><option value="">Contents…</option></select>
+  <button class="btn-ghost" id="font-dec" type="button" aria-label="Smaller text">A−</button>
+  <button class="btn-ghost" id="font-inc" type="button" aria-label="Larger text">A+</button>
+  <button class="btn-ghost" id="prev" type="button" aria-label="Previous page">‹</button>
+  <button class="btn-ghost" id="next" type="button" aria-label="Next page">›</button>
+  <span id="progress"></span>
+</div>
+<div id="viewer">
+  <div class="zone" id="zone-left" hidden></div>
+  <div class="zone" id="zone-right" hidden></div>
+  <div id="loading">Opening…</div>
+</div>
+<script type="module" src="/reader.js"></script>
+</body>
+</html>
