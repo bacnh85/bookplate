@@ -67,6 +67,16 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+      # arm64 gate before push: test job only exercises native amd64, so without
+      # this an arm64-only breakage (exec-format zlib, missing wheels) ships in latest
+      - name: Smoke-test arm64 under QEMU
+        run: |
+          docker buildx build --platform linux/arm64 -t bookplate:arm64 --load .
+          docker run -d --name arm-smoke -p 8481:8480 bookplate:arm64
+          for i in $(seq 1 60); do curl -fsS http://localhost:8481/ >/dev/null && break; sleep 2; done
+          curl -fsS http://localhost:8481/ >/dev/null
+          docker exec arm-smoke zlib --version
+          docker rm -f arm-smoke
       - uses: docker/build-push-action@v6
         with:
           context: .

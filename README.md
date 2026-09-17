@@ -22,7 +22,12 @@ docker compose up -d
 
 All state lives in the mounted volume (`/app/data` inside the container): SQLite DB,
 book files, covers. Back up = copy that volume. To move an existing local-dev install,
-stop the server and copy the whole local `data/` dir into the volume/bind mount.
+stop the server and copy the whole local `data/` dir into the volume — with compose
+(named volume `bookplate-data`) one way:
+
+```bash
+docker run --rm -v bookplate-data:/dest -v "$PWD/data":/src:ro alpine sh -c 'cp -a /src/. /dest/'
+```
 
 ### Image tags
 
@@ -48,8 +53,9 @@ below (`.env.local` is only a local-dev convenience, never used in Docker):
 - The server is plain HTTP — put a TLS reverse proxy (e.g. Caddy) in front for anything
   beyond a trusted LAN (OPDS/reader apps use basic auth).
 - Healthcheck is built into the image; `docker ps` shows `healthy` once up.
-- Bind-mounting a host dir (compose default `./data`) with a different UID? Add
-  `user: "1000:1000"` and `chown` the dir to match.
+- Prefer the named volume (compose default). Bind-mounting a host dir instead? On
+  Linux, pre-create it with the right owner or the container (uid 1000) can't write:
+  `mkdir -p data && sudo chown 1000:1000 data`
 - Pulling from a private package? `docker login ghcr.io` with a GitHub PAT (read:packages),
   or flip the package to public in the GitHub UI (Package settings → visibility).
 
@@ -102,7 +108,7 @@ again. No web settings UI — secrets stay out of the database and out of git.
 ## Test
 
 ```bash
-.venv/bin/python scripts/selftest.py   # 14 end-to-end checks against a running server
+.venv/bin/python scripts/selftest.py   # e2e checks against a running server
 ```
 
 ## iPhone / iPad

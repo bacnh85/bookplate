@@ -111,7 +111,8 @@ def main():
 
     # 6. FTS search
     res = cx.get(f"{BASE}/api/books", params={"q": "testing"}, headers={"Authorization": f"Bearer {t_alice}"}).json()
-    check("FTS search 'testing'", any("Art of Testing" in x["title"] for x in res), str([x['title'] for x in res]))
+    check("FTS search 'testing'", isinstance(res, list) and any("Art of Testing" in x["title"] for x in res),
+          str([x.get("title") for x in res])[:200] if isinstance(res, list) else str(res)[:200])
 
     # 6b. quoted/malformed query must not 500
     r = cx.get(f"{BASE}/api/books", params={"q": 'o"brien AND (weird'}, headers={"Authorization": f"Bearer {t_alice}"})
