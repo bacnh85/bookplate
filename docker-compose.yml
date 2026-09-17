@@ -1,0 +1,15 @@
+# Bookplate — self-hosted ebook library
+# Usage: docker compose up -d   (then open http://localhost:8480)
+services:
+  bookplate:
+    image: ghcr.io/bacnh85/bookplate:latest
+    ports:
+      - "8480:8480"
+    volumes:
+      - ./data:/app/data        # all state lives here: SQLite DB, books, covers
+    restart: unless-stopped
+    # optional provider keys (env replaces the dev .env.local):
+    # environment:
+    #   ZAI_API_KEY: ...            # AI metadata fallback
+    #   ZLIB_EMAIL: ...             # Z-Library account (search/download)
+    #   ZLIB_PASSWORD: ...

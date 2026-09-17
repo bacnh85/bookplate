@@ -1,0 +1,9 @@
+# dev-only state and secrets must never enter the image
+.git
+.venv
+data/
+.env.local
+__pycache__/
+*.pyc
+.agents/
+.pi/

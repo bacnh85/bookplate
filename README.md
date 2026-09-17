@@ -4,7 +4,56 @@ Self-hosted multi-user ebook library: upload with auto-metadata, hash dedup,
 in-browser reading, z-library search/download (optional), user-to-user sharing,
 OPDS for iOS reader apps, AI metadata fallback (optional).
 
-## Run
+## Deploy with Docker
+
+Multi-arch image (`linux/amd64` + `linux/arm64`) published to GHCR by CI on every push to
+`main` and every `v*` tag. Docker picks the right variant automatically — x86-64 servers,
+Apple Silicon, Raspberry Pi 4/5 and ARM NAS all just `docker pull`.
+
+```bash
+# quick start
+docker run -d --name bookplate -p 8480:8480 -v bookplate-data:/app/data \
+  ghcr.io/bacnh85/bookplate:latest
+
+# or with compose (recommended)
+docker compose up -d
+# then open http://localhost:8480
+```
+
+All state lives in the mounted volume (`/app/data` inside the container): SQLite DB,
+book files, covers. Back up = copy that volume. To move an existing local-dev install,
+stop the server and copy the whole local `data/` dir into the volume/bind mount.
+
+### Image tags
+
+| Tag | What |
+|---|---|
+| `latest` | newest build from `main` |
+| `main` | current `main` (same as `latest`) |
+| `1.2.3`, `1.2` | release builds (`git tag v1.2.3 && git push --tags`) |
+| `sha-<commit>` | exact commit a running container came from |
+
+### Configuration
+
+Optional keys are passed as env (`-e` / compose `environment:`) — same vars as the table
+below (`.env.local` is only a local-dev convenience, never used in Docker):
+
+- `ZAI_API_KEY` (+ optional `ZAI_BASE_URL` / `ZAI_MODEL`) — AI metadata fallback.
+- `ZLIB_EMAIL` / `ZLIB_PASSWORD` — Z-Library search/download. The `zlib` CLI is baked
+  into the image; with credentials set it auto-logs-in on demand (the session is
+  per-container and re-establishes after restarts).
+
+### Notes
+
+- The server is plain HTTP — put a TLS reverse proxy (e.g. Caddy) in front for anything
+  beyond a trusted LAN (OPDS/reader apps use basic auth).
+- Healthcheck is built into the image; `docker ps` shows `healthy` once up.
+- Bind-mounting a host dir (compose default `./data`) with a different UID? Add
+  `user: "1000:1000"` and `chown` the dir to match.
+- Pulling from a private package? `docker login ghcr.io` with a GitHub PAT (read:packages),
+  or flip the package to public in the GitHub UI (Package settings → visibility).
+
+## Local development (macOS)
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt

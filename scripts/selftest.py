@@ -99,7 +99,9 @@ def main():
           f'{b3["title"]} / {b3["authors"]}')
 
     # 4. exact dedup: same bytes again
-    r = upload(cx, t_alice, "Computer Networks.pdf", make_pdf("Computer Networks", "Andrew Tanenbaum"))
+    dup_pdf = make_pdf("Computer Networks", "Andrew Tanenbaum")
+    upload(cx, t_alice, "Computer Networks.pdf", dup_pdf)  # first store
+    r = upload(cx, t_alice, "Computer Networks.pdf", dup_pdf)  # same bytes -> dedup
     check("exact dedup (same sha)", r["duplicate"] is True)
 
     # 5. logical dup: same title different file
