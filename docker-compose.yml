@@ -10,10 +10,14 @@ services:
                                    # (bind ./data:/app/data works too, but on Linux
                                    # pre-create it: mkdir -p data && chown 1000:1000 data)
     restart: unless-stopped
-volumes:
-  bookplate-data:
     # optional provider keys (env replaces the dev .env.local):
     # environment:
     #   ZAI_API_KEY: ...            # AI metadata fallback
     #   ZLIB_EMAIL: ...             # Z-Library account (search/download)
     #   ZLIB_PASSWORD: ...
+
+volumes:
+  bookplate-data:
+    name: bookplate-data   # pin the real name (compose would otherwise prefix it
+                           # with the checkout dir) so the README migration
+                           # command's -v bookplate-data targets THIS volume
