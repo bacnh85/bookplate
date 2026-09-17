@@ -15,6 +15,7 @@ services:
     #   ZAI_API_KEY: ...            # AI metadata fallback
     #   ZLIB_EMAIL: ...             # Z-Library account (search/download)
     #   ZLIB_PASSWORD: ...
+    #   ZLIB_DOMAIN: https://z-lib.gd   # optional; only if the default mirror rots
 
 volumes:
   bookplate-data:

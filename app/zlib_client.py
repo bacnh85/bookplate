@@ -54,9 +54,12 @@ class Zlib:
         if cfg.is_dir() and any(cfg.iterdir()):
             return  # CLI already manages state here (session.json/.env/config.json)
         if os.getenv("ZLIB_EMAIL") and os.getenv("ZLIB_PASSWORD"):
+            # auto-login needs a domain; default rot-checks via `zlib doctor --eapi`,
+            # override with ZLIB_DOMAIN when mirrors change
+            domain = os.getenv("ZLIB_DOMAIN", "https://z-lib.gd")
             rc, out, err = await self._run(
                 "login", "--eapi", "--email", os.getenv("ZLIB_EMAIL"),
-                "--password", os.getenv("ZLIB_PASSWORD"), timeout=120)
+                "--password", os.getenv("ZLIB_PASSWORD"), "--domain", domain, timeout=120)
             if rc != 0:
                 raise ZlibUnavailable(f"Z-Library login failed: {(err or out).strip()[:200]}")
 

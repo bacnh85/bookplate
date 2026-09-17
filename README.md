@@ -50,7 +50,8 @@ below (`.env.local` is only a local-dev convenience, never used in Docker):
 - `ZAI_API_KEY` (+ optional `ZAI_BASE_URL` / `ZAI_MODEL`) — AI metadata fallback.
 - `ZLIB_EMAIL` / `ZLIB_PASSWORD` — Z-Library search/download. The `zlib` CLI is baked
   into the image; with credentials set it auto-logs-in on demand (the session is
-  per-container and re-establishes after restarts).
+  per-container and re-establishes after restarts). Mirror rotting? Set
+  `ZLIB_DOMAIN` (`zlib doctor --eapi` lists healthy mirrors).
 
 ### Notes
 
@@ -94,6 +95,7 @@ gitignored too; recreate provider keys there on the target host.
 | Var | Purpose |
 |---|---|
 | `ZLIB_EMAIL` / `ZLIB_PASSWORD` | Your Z-Library account — used to auto-login the `zlib` CLI if no session exists |
+| `ZLIB_DOMAIN` | Override the auto-login mirror (default `https://z-lib.gd`); check healthy mirrors with `zlib doctor --eapi` |
 | `ZAI_API_KEY` | AI metadata fallback for garbage files (any OpenAI-compatible provider) |
 | `ZAI_BASE_URL` / `ZAI_MODEL` | Defaults: `https://api.z.ai/api/openai/v1`, `glm-5.3-flash` |
 
