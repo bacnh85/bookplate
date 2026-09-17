@@ -26,8 +26,12 @@ stop the server and copy the whole local `data/` dir into the volume — with co
 (named volume `bookplate-data`) one way:
 
 ```bash
-docker run --rm -v bookplate-data:/dest -v "$PWD/data":/src:ro alpine sh -c 'cp -a /src/. /dest/'
+docker run --rm -v bookplate-data:/dest -v "$PWD/data":/src:ro alpine sh -c 'cp -a /src/. /dest/ && chown -R 1000:1000 /dest'
 ```
+
+The `chown` matters: `cp -a` keeps the source uid (501 on macOS, your uid on Linux) but
+the container runs as uid 1000 — without it the migrated DB is unwritable and the
+container crash-loops.
 
 ### Image tags
 
