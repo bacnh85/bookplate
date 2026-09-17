@@ -7,8 +7,10 @@ The CLI solves both automatically and exposes --json for search/profile.
 One-time setup on the host:
   brew install heartleo/tap/zlib
   zlib login --eapi --email you@x --password ... --domain https://z-lib.gd
-Session persists in ~/.config/zlib. If it expires and ZLIB_EMAIL/ZLIB_PASSWORD
-are set (.env.local), this adapter re-logins automatically.
+Session persists in ~/.config/zlib. If a call fails because the session is missing
+or expired and ZLIB_EMAIL/ZLIB_PASSWORD are set (.env.local), this adapter re-logins
+and retries once. NOTE: the CLI has no stdin/env password input, so the password
+transits argv for the duration of a login (ps-visible on multi-user hosts).
 """
 import asyncio
 import json
@@ -32,6 +34,7 @@ class Zlib:
             out, err = await asyncio.wait_for(proc.communicate(), timeout)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()  # reap the killed process (else it lingers as a zombie)
             raise ZlibUnavailable(f"zlib {args[0]} timed out after {int(timeout)}s")
         return (proc.returncode or 0,
                 out.decode(errors="replace"),
@@ -47,25 +50,45 @@ class Zlib:
     def enabled(self) -> bool:
         return shutil.which("zlib") is not None
 
+    def _creds(self) -> tuple[str, str] | None:
+        email, password = os.getenv("ZLIB_EMAIL"), os.getenv("ZLIB_PASSWORD")
+        return (email, password) if email and password else None
+
+    async def _login(self) -> None:
+        """Fresh login, overwriting any stale session."""
+        creds = self._creds()
+        if not creds:
+            raise ZlibUnavailable("Z-Library login needs ZLIB_EMAIL/ZLIB_PASSWORD")
+        domain = os.getenv("ZLIB_DOMAIN", "https://z-lib.gd")
+        rc, out, err = await self._run(
+            "login", "--eapi", "--email", creds[0], "--password", creds[1],
+            "--domain", domain, timeout=120)
+        if rc != 0:
+            raise ZlibUnavailable(f"Z-Library login failed: {(err or out).strip()[:200]}")
+
     async def _ensure_session(self) -> None:
-        """Re-login from .env.local creds if the CLI has no session yet."""
+        """Login from env creds if the CLI has no session yet (expiry is handled
+        by the re-login+retry in _run_authed)."""
         self._require_cli()
         cfg = Path.home() / ".config" / "zlib"
         if cfg.is_dir() and any(cfg.iterdir()):
-            return  # CLI already manages state here (session.json/.env/config.json)
-        if os.getenv("ZLIB_EMAIL") and os.getenv("ZLIB_PASSWORD"):
-            # auto-login needs a domain; default rot-checks via `zlib doctor --eapi`,
-            # override with ZLIB_DOMAIN when mirrors change
-            domain = os.getenv("ZLIB_DOMAIN", "https://z-lib.gd")
-            rc, out, err = await self._run(
-                "login", "--eapi", "--email", os.getenv("ZLIB_EMAIL"),
-                "--password", os.getenv("ZLIB_PASSWORD"), "--domain", domain, timeout=120)
-            if rc != 0:
-                raise ZlibUnavailable(f"Z-Library login failed: {(err or out).strip()[:200]}")
+            return  # CLI manages state here; a stale session is handled on failure
+        if self._creds():
+            await self._login()
+
+    async def _run_authed(self, *args: str, timeout: float = 90, _retried: bool = False):
+        """Run a session-requiring command; on failure, force one re-login and retry
+        (covers sessions that expired on disk — _ensure_session can't see that)."""
+        rc, out, err = await self._run(*args, timeout=timeout)
+        if rc == 0 or _retried or not self._creds():
+            return rc, out, err
+        await self._run("logout", timeout=30)  # best effort: drop the stale session
+        await self._login()
+        return await self._run(*args, timeout=timeout)
 
     async def search(self, q: str, count: int = 20) -> list[dict]:
         await self._ensure_session()
-        rc, out, err = await self._run("search", q, "--json", timeout=90)
+        rc, out, err = await self._run_authed("search", q, "--json", "-n", str(count), timeout=90)
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library search failed: {(err or out).strip()[:200]}")
         try:
@@ -83,10 +106,13 @@ class Zlib:
 
     async def limits(self) -> dict:
         await self._ensure_session()
-        rc, out, err = await self._run("profile", "--json", timeout=60)
+        rc, out, err = await self._run_authed("profile", "--json", timeout=60)
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library profile failed: {(err or out).strip()[:200]}")
-        return json.loads(out)
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError as e:
+            raise ZlibUnavailable(f"Z-Library profile returned junk: {e}") from e
 
     async def download(self, book_id: str) -> tuple[bytes, dict]:
         """Returns (file_bytes, meta) — meta['_filename'] is the CLI's own filename."""
@@ -95,7 +121,7 @@ class Zlib:
         tmp.mkdir(exist_ok=True)
         out_dir = Path(tempfile.mkdtemp(dir=tmp))
         try:
-            rc, out, err = await self._run(
+            rc, out, err = await self._run_authed(
                 "download", str(book_id), "--dir", str(out_dir), timeout=600)
             files = list(out_dir.iterdir())
             if rc != 0 or not files:
