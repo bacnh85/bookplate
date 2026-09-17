@@ -76,11 +76,12 @@ class Zlib:
         if self._creds():
             await self._login()
 
-    async def _run_authed(self, *args: str, timeout: float = 90, _retried: bool = False):
+    async def _run_authed(self, *args: str, timeout: float = 90):
         """Run a session-requiring command; on failure, force one re-login and retry
-        (covers sessions that expired on disk — _ensure_session can't see that)."""
+        (covers sessions that expired on disk — _ensure_session can't see that).
+        Exactly one retry: the follow-up runs via plain _run, not recursively."""
         rc, out, err = await self._run(*args, timeout=timeout)
-        if rc == 0 or _retried or not self._creds():
+        if rc == 0 or not self._creds():
             return rc, out, err
         await self._run("logout", timeout=30)  # best effort: drop the stale session
         await self._login()
