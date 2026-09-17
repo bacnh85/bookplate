@@ -158,7 +158,9 @@ def main():
 
     # 14b. JWT secret file must be owner-only — local target only: this stats the
     # local checkout's file, which is not the file a remote BASE actually uses.
-    if BASE.startswith(("http://localhost", "http://127.0.0.1")):
+    # only meaningful when the test shares a filesystem with the server (local dev
+    # server); against a containerized/remote server the local data dir won't exist
+    if BASE.startswith(("http://localhost", "http://127.0.0.1")) and (Path(__file__).resolve().parent.parent / "data").exists():
         secret = Path(__file__).resolve().parent.parent / "data" / ".secret"
         mode = stat.S_IMODE(os.stat(secret).st_mode) if secret.exists() else None
         check("secret file 0600", mode == 0o600, "missing" if mode is None else oct(mode))

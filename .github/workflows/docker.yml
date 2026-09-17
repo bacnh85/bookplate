@@ -34,6 +34,11 @@ jobs:
         run: |
           pip install -r requirements.txt
           python scripts/selftest.py http://localhost:8480
+      - name: Verify container-created files are 0600
+        run: |
+          MODE=$(docker exec bookplate stat -c '%a' /app/data/.secret)
+          echo "/app/data/.secret mode: $MODE"
+          [ "$MODE" = "600" ]
 
   publish:
     # multi-arch image to GHCR: linux/amd64 + linux/arm64
