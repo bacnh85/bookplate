@@ -166,6 +166,16 @@ def main():
         mode = stat.S_IMODE(os.stat(secret).st_mode) if secret.exists() else None
         check("secret file 0600", mode == 0o600, "missing" if mode is None else oct(mode))
 
+    # 15. static frontend must serve (a bad catch-all route 404s reader.html
+    # — shipped once because nothing checked it) and revalidate on load
+    for path, label in [("/", "index served"), ("/reader.html", "reader page served"),
+                        ("/app.js", "app.js served"), ("/app.css", "app.css served"),
+                        ("/foliate-js/epub.js", "foliate-js served")]:
+        with httpx.Client(base_url=BASE) as cx:
+            r = cx.get(path)
+            check(label, r.status_code == 200 and r.headers.get("cache-control") == "no-cache",
+                  f"{r.status_code} {r.headers.get('cache-control')}")
+
     print(f"\n{ok} passed, {total - ok} failed")
     return 0 if ok == total else 1
 
