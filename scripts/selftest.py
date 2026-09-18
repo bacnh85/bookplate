@@ -224,7 +224,7 @@ def main():
     # at the door; a fake-but-wellformed md5 keeps the probe inert even where a real
     # member key exists (upstream answers "Invalid md5").
     r = cx.get(f"{BASE}/api/annas/search", params={"q": "x"}, headers={"Authorization": f"Bearer {t_alice}"})
-    check("annas no-500 invariant", r.status_code in (200, 503), str(r.status_code))
+    check("annas no-500 invariant", r.status_code in (200, 400, 503), str(r.status_code))
     r = cx.post(f"{BASE}/api/annas/queue", json={"id": "not-an-md5", "name": "x"},
                 headers={"Authorization": f"Bearer {t_alice}"})
     check("annas queue rejects non-md5", r.status_code == 400, r.text[:120])

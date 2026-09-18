@@ -368,6 +368,8 @@ def zlib_queue_retry(job_id: int, user=UserDep):
 async def annas_search(q: str, user=UserDep):
     try:
         return {"results": await annas.search(q)}
+    except AnnasConfigError as e:
+        raise HTTPException(400, str(e))  # permanent: missing/rejected key
     except AnnasUnavailable as e:
         raise HTTPException(503, str(e))
 

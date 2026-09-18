@@ -10,7 +10,9 @@ import hashlib
 import os
 import pathlib
 import sys
+import shutil
 import time
+import tempfile
 import unittest
 from unittest import mock
 
@@ -247,17 +249,16 @@ class SearchTests(unittest.TestCase):
         self.assertGreaterEqual(len(rows), 10)
 
     def test_cross_origin_redirect_drops_session_cookie(self):
-        # a hostile/injected redirect must not carry the member session off-host
+        # a hostile/injected redirect must not be followed at all — the server
+        # must not GET an attacker-chosen host (cookie or not)
         self.annas._cookie, self.annas._cookie_at = "aa_account_id2=secret", time.monotonic()
         fake = FakeAsyncClient([xredirect(), resp(200, text="leak?")])
         with mock.patch("app.annas_client.httpx.AsyncClient", lambda *a, **k: fake):
-            r = run(self.annas._fetch_authed(f"{BASE}/search?q=x"))
-        self.assertEqual(r.status_code, 200)
-        first_host = httpx.URL(fake.requests[0][1]).host
-        self.assertEqual(first_host, "annas-archive.gd")
-        self.assertIn("Cookie", fake.requests[0][2])  # sent to the mirror
-        self.assertEqual(httpx.URL(fake.requests[1][1]).host, "evil.example")
-        self.assertNotIn("Cookie", fake.requests[1][2])  # never off-host
+            with self.assertRaises(AnnasUnavailable) as cm:
+                run(self.annas._fetch_authed(f"{BASE}/search?q=x"))
+        self.assertIn("off-mirror", str(cm.exception))
+        self.assertEqual(len(fake.requests), 1)  # the evil hop was never issued
+        self.assertIn("Cookie", fake.requests[0][2])  # cookie only went to the mirror
 
     def test_same_host_redirect_keeps_cookie(self):
         self.annas._cookie, self.annas._cookie_at = "aa_account_id2=x", time.monotonic()
@@ -440,6 +441,106 @@ class SlowDownloadTests(unittest.TestCase):
             with self.assertRaises(AnnasUnavailable) as cm:
                 run(self.annas._slow_download(MD5, None, None))
         self.assertIn("slow", str(cm.exception))
+
+class MainWiringTests(unittest.TestCase):
+    """main.py annas wiring: enqueue validation, retry alias, worker dispatch.
+    Runs against a throwaway DB — app.main is imported AFTER the db paths are
+    redirected, because main calls db.init() at import time."""
+
+    @classmethod
+    def setUpClass(cls):
+        import app.db as db
+        cls._tmp = pathlib.Path(tempfile.mkdtemp(prefix="annas-wiring-"))
+        cls._patches = [
+            mock.patch.object(db, "DATA_DIR", cls._tmp),
+            mock.patch.object(db, "DB_PATH", cls._tmp / "test.db"),
+        ]
+        for p in cls._patches:
+            p.start()
+        import app.main as main  # db.init() now lands in the temp DB
+        cls.main = main
+        with db.conn() as c:
+            c.execute("INSERT OR IGNORE INTO users(id, email, password_hash) "
+                      "VALUES(424242, 'wire@t.io', 'x')")
+        cls.user = {"id": 424242, "email": "wire@t.io"}
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        shutil.rmtree(cls._tmp, ignore_errors=True)
+
+    def test_enqueue_rejects_non_md5(self):
+        # the id flows into slow_download URLs — arbitrary strings never reach it
+        with self.assertRaises(self.main.HTTPException) as cm:
+            self.main.annas_enqueue(self.main.ZlibQueueReq(id="../../etc/passwd"),
+                                    user=self.user)
+        self.assertEqual(cm.exception.status_code, 400)
+
+    def test_enqueue_tags_source(self):
+        row = self.main.annas_enqueue(self.main.ZlibQueueReq(id="ab" * 16, name="W"),
+                                      user=self.user)
+        self.assertEqual(row["source"], "annas")
+
+    def test_retry_alias_route_registered(self):
+        paths = {getattr(r, "path", "") for r in self.main.app.routes}
+        self.assertIn("/api/annas/queue/{job_id}/retry", paths)
+
+    def test_retry_resets_failed_annas_row(self):
+        with self.main.db.conn() as c:
+            cur = c.execute("INSERT INTO download_jobs(user_id, zlib_id, title, source, "
+                            "status, attempts, error) VALUES(424242, ?, 'R', 'annas', "
+                            "'failed', 1, 'boom')", ("ef" * 16,))
+            job_id = cur.lastrowid
+        r = self.main.zlib_queue_retry(job_id, user=self.user)  # shared handler
+        self.assertEqual(r, {"ok": True})
+        with self.main.db.conn() as c:
+            row = c.execute("SELECT status, attempts, error FROM download_jobs WHERE id=?",
+                            (job_id,)).fetchone()
+        self.assertEqual((row["status"], row["attempts"], row["error"]), ("queued", 0, ""))
+
+    def test_search_endpoint_maps_config_vs_transient(self):
+        with mock.patch.object(self.main.annas, "search",
+                               side_effect=AnnasConfigError("no key set")):
+            with self.assertRaises(self.main.HTTPException) as cm:
+                run(self.main.annas_search(q="x", user=self.user))
+        self.assertEqual(cm.exception.status_code, 400)
+        self.assertIn("no key", cm.exception.detail)
+        with mock.patch.object(self.main.annas, "search",
+                               side_effect=AnnasUnavailable("bot check")):
+            with self.assertRaises(self.main.HTTPException) as cm:
+                run(self.main.annas_search(q="x", user=self.user))
+        self.assertEqual(cm.exception.status_code, 503)
+
+    def test_run_job_dispatches_annas_never_zlib(self):
+        # a dispatch typo must not silently send AA jobs to the zlib CLI
+        with self.main.db.conn() as c:
+            cur = c.execute("INSERT INTO download_jobs(user_id, zlib_id, title, source, "
+                            "status) VALUES(424242, ?, 'D', 'annas', 'queued')", ("12" * 16,))
+            job_id = cur.lastrowid
+        job = dict(self.main.db.conn().execute(
+            "SELECT * FROM download_jobs WHERE id=?", (job_id,)).fetchone())
+        calls = []
+
+        async def fake_annas_download(md5, on_progress=None, expected_size=None):
+            calls.append(("annas", md5))
+            raise AnnasConfigError("member check failed")
+
+        async def fake_zlib_download(*a, **k):
+            calls.append(("zlib",))
+            raise AssertionError("zlib CLI used for an annas job")
+
+        with mock.patch.object(self.main.annas, "download", fake_annas_download), \
+             mock.patch.object(self.main.zlib, "download", fake_zlib_download), \
+             mock.patch.object(self.main.zlib, "limits",
+                               side_effect=AssertionError("zlib quota probe ran")):
+            run(self.main._run_job(job))
+        self.assertEqual(calls, [("annas", "12" * 16)])
+        with self.main.db.conn() as c:
+            row = c.execute("SELECT status, error FROM download_jobs WHERE id=?",
+                            (job_id,)).fetchone()
+        self.assertEqual(row["status"], "failed")  # config error: fail fast, no retry
+        self.assertIn("member check failed", row["error"])
 
 
 if __name__ == "__main__":

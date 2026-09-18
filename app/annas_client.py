@@ -240,9 +240,17 @@ class Annas:
                 if _is_challenge(r):
                     raise _Challenge()
                 if 300 <= r.status_code < 400 and r.headers.get("location"):
+                    nxt = urljoin(cur, r.headers["location"])
+                    if httpx.URL(nxt).host != base_host:
+                        # same threat model as webfetch: a compromised mirror must
+                        # not point the server at arbitrary hosts (the cookie is
+                        # withheld, but the GET itself still leaks intent)
+                        raise AnnasUnavailable(
+                            "Anna's Archive redirected off-mirror "
+                            f"({httpx.URL(nxt).host}) — refusing to follow")
                     if (hop := hop + 1) > MAX_HOPS:
                         raise AnnasUnavailable("too many redirects from Anna's Archive")
-                    cur = urljoin(cur, r.headers["location"])
+                    cur = nxt
                     continue
                 return r
 
@@ -276,6 +284,10 @@ class Annas:
             raise AnnasUnavailable(f"Anna's Archive unreachable: {e}") from e
         if r.status_code == 429:
             raise AnnasUnavailable("Anna's Archive rate-limited the API (429)")
+        if _is_challenge(r):
+            raise AnnasUnavailable(_guard_hint(self._base()))
+        if r.status_code != 200:  # includes the documented 204: no body to parse
+            raise AnnasUnavailable(f"Anna's Archive fast_download HTTP {r.status_code}")
         try:
             data = r.json()
             if not isinstance(data, dict):
