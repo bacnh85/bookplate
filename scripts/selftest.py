@@ -234,6 +234,8 @@ def main():
                    headers={"Authorization": f"Bearer {t_alice}"}).json()
     check("annas enqueue tags source", bool(ajob.get("id")) and ajob.get("source") == "annas",
           str(ajob)[:200])
+    jobs = cx.get(f"{BASE}/api/annas/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+    check("annas queue list alias", any(j["id"] == ajob["id"] for j in jobs))
     handled = None
     for _ in range(30):  # config errors fail fast; upstream errors show attempts>=1
         jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]

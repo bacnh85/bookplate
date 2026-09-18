@@ -218,12 +218,16 @@ const SOURCES = {
   annas: { search: "/api/annas/search", queue: "/api/annas/queue" },
 };
 let findSource = "zlib";
-function setSource(s) {
-  if (findSource === s) return;
-  findSource = s;
+function applySourceUI(s) {
   $("#src-zlib").classList.toggle("active", s === "zlib");
   $("#src-annas").classList.toggle("active", s === "annas");
   $("#zlib-search").placeholder = s === "annas" ? "Search Anna's Archive…" : "Search Z-Library…";
+}
+function setSource(s) {
+  if (findSource === s) return;
+  findSource = s;
+  localStorage.setItem("findSource", s);  // survive reloads: the toggle used to reset
+  applySourceUI(s);
   $("#zlib-error").textContent = "";
   $("#zlib-results").innerHTML = "";
   if (s === "zlib") showQuota();
@@ -231,6 +235,7 @@ function setSource(s) {
 }
 $("#src-zlib").onclick = () => setSource("zlib");
 $("#src-annas").onclick = () => setSource("annas");
+applySourceUI(findSource = localStorage.getItem("findSource") === "annas" ? "annas" : "zlib");
 
 async function showQuota() {
   if (findSource !== "zlib") return;
@@ -285,6 +290,7 @@ function resultRow(r, rank) {
       ${r.publisher ? `<div class="result-sub">${esc(r.publisher)}</div>` : ""}
     </div>
     <div class="result-meta">
+      <span class="badge">${r.source === "annas" ? "AA" : "z-lib"}</span>
       ${r.year ? `<span>Year: ${esc(r.year)}</span>` : ""}
       ${r.language ? `<span>Language: ${esc(r.language)}</span>` : ""}
       <span>File: ${esc((r.extension || "?").toUpperCase())}${r.size ? `, ${esc(r.size)}` : ""}</span>

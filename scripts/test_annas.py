@@ -486,6 +486,24 @@ class MainWiringTests(unittest.TestCase):
         paths = {getattr(r, "path", "") for r in self.main.app.routes}
         self.assertIn("/api/annas/queue/{job_id}/retry", paths)
 
+    def test_queue_list_and_delete_aliases(self):
+        row = self.main.annas_enqueue(self.main.ZlibQueueReq(id="99" * 16, name="Q"),
+                                      user=self.user)
+        jobs = self.main.annas_queue_list(user=self.user)["jobs"]
+        self.assertTrue(any(j["id"] == row["id"] and j["source"] == "annas" for j in jobs))
+        self.assertEqual(self.main.annas_queue_remove(row["id"], user=self.user),
+                         {"ok": True})
+
+    def test_queue_get_and_delete_methods_exist(self):
+        # the 405 class: GET/DELETE on the annas queue resource used to 405
+        methods = {}
+        for r in self.main.app.routes:
+            ms = tuple(sorted(getattr(r, "methods", []) or []))
+            if r.path in ("/api/annas/queue", "/api/annas/queue/{job_id}"):
+                methods.setdefault(r.path, set()).update(ms)
+        self.assertIn("GET", methods["/api/annas/queue"])
+        self.assertIn("DELETE", methods["/api/annas/queue/{job_id}"])
+
     def test_retry_resets_failed_annas_row(self):
         with self.main.db.conn() as c:
             cur = c.execute("INSERT INTO download_jobs(user_id, zlib_id, title, source, "

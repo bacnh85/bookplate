@@ -374,6 +374,12 @@ async def annas_search(q: str, user=UserDep):
         raise HTTPException(503, str(e))
 
 
+@app.get("/api/annas/queue")
+def annas_queue_list(user=UserDep):
+    # alias: one shared queue table; clients of either source can list it
+    return zlib_queue(user=user)
+
+
 @app.post("/api/annas/queue")
 def annas_enqueue(req: ZlibQueueReq, user=UserDep):
     # id is the book's md5 from the search page — validate before it reaches URLs
@@ -389,6 +395,11 @@ def annas_enqueue(req: ZlibQueueReq, user=UserDep):
         row = con.execute("SELECT * FROM download_jobs WHERE user_id=? AND zlib_id=?",
                           (user["id"], req.id)).fetchone()
     return dict(row)
+
+
+@app.delete("/api/annas/queue/{job_id}")
+def annas_queue_remove(job_id: int, user=UserDep):
+    return zlib_queue_remove(job_id, user=user)
 
 
 # ---------- download queue worker ----------
