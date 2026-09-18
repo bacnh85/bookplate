@@ -198,7 +198,7 @@ $("#share-ok").onclick = async () => {
   } catch (err) { $("#share-error").textContent = err.message; }
 };
 
-/* ---------- find (z-library) ---------- */
+/* ---------- find (z-library / anna's archive) ---------- */
 $("#tab-shelf").onclick = () => switchTab("shelf");
 $("#tab-find").onclick = () => switchTab("find");
 function switchTab(tab) {
@@ -210,10 +210,35 @@ function switchTab(tab) {
   else if (tab === "find") showQuota();
 }
 
+/* rows carry `source: "annas"` from the annas search; absent = z-library.
+   Quota lines are z-lib only — anna's archive has no quota endpoint. */
+const rowSource = (r) => (r && r.source === "annas") ? "annas" : "zlib";
+const SOURCES = {
+  zlib: { search: "/api/zlib/search", queue: "/api/zlib/queue" },
+  annas: { search: "/api/annas/search", queue: "/api/annas/queue" },
+};
+let findSource = "zlib";
+function setSource(s) {
+  if (findSource === s) return;
+  findSource = s;
+  $("#src-zlib").classList.toggle("active", s === "zlib");
+  $("#src-annas").classList.toggle("active", s === "annas");
+  $("#zlib-search").placeholder = s === "annas" ? "Search Anna's Archive…" : "Search Z-Library…";
+  $("#zlib-error").textContent = "";
+  $("#zlib-results").innerHTML = "";
+  if (s === "zlib") showQuota();
+  if ($("#zlib-search").value.trim()) zlibSearch($("#zlib-search").value);
+}
+$("#src-zlib").onclick = () => setSource("zlib");
+$("#src-annas").onclick = () => setSource("annas");
+
 async function showQuota() {
+  if (findSource !== "zlib") return;
+  const src = findSource;  // the reply may land after the user switched sources
   $("#zlib-error").textContent = "";
   try {
     const l = await api("/api/zlib/limits");
+    if (findSource !== src) return;
     $("#zlib-error").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
   } catch { /* unconfigured — surfaced on search */ }
 }
@@ -231,7 +256,7 @@ async function zlibSearch(q) {
   const box = $("#zlib-results");
   box.innerHTML = `<div class="skeleton" style="height:84px"></div>`;
   try {
-    const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(q)}`);
+    const { results } = await api(`${SOURCES[findSource].search}?q=${encodeURIComponent(q)}`);
     if (seq !== zlibSearchSeq) return;  // a newer search superseded this one
     box.innerHTML = "";
     if (!results.length) { box.innerHTML = `<div class="empty">No results.</div>`; return; }
@@ -324,9 +349,13 @@ function openDetail(r) {
   dlg.scrollTop = 0;
   loadRelated(r);
   refreshQueue();  // mirror any existing queue state for this book onto the button
-  api("/api/zlib/limits").then((l) => {
-    $("#detail-quota").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
-  }).catch(() => { /* unconfigured — surfaced on download */ });
+  if (rowSource(r) === "zlib") {
+    api("/api/zlib/limits").then((l) => {
+      $("#detail-quota").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
+    }).catch(() => { /* unconfigured — surfaced on download */ });
+  } else {
+    $("#detail-quota").textContent = "";  // anna's archive: no quota endpoint
+  }
 }
 
 $("#detail-download").onclick = async () => {
@@ -352,7 +381,7 @@ async function loadRelated(r) {
   $("#related-strip").innerHTML = `<div class="skeleton" style="height:96px"></div>`;
   section.hidden = false;
   try {
-    const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(author)}`);
+    const { results } = await api(`${SOURCES[rowSource(r)].search}?q=${encodeURIComponent(author)}`);
     if (seq !== zlibSearchSeq || detailBook?.id !== r.id) return;
     const rel = results.filter((b) => b.id !== r.id).slice(0, 6);
     if (!rel.length) { section.hidden = true; return; }
@@ -377,7 +406,7 @@ const QUEUE_TERMINAL = ["done", "failed", "canceled"];
 let queueTimer = null;
 
 async function enqueue(r) {
-  const j = await api("/api/zlib/queue", { method: "POST", json: {
+  const j = await api(`${SOURCES[rowSource(r)].queue}`, { method: "POST", json: {
     id: r.id, name: r.name, authors: r.authors, cover: r.cover,
     extension: r.extension, size: r.size } });
   if (j.status === "failed") await api(`/api/zlib/queue/${j.id}/retry`, { method: "POST" });
@@ -427,7 +456,7 @@ function renderQueue(jobs) {
         ? `<img class="queue-cover" loading="lazy" src="${esc(j.cover_url)}" alt="" onerror="this.remove()">`
         : `<div class="queue-cover generated" aria-hidden="true">${initial}</div>`}
       <div class="queue-main">
-        <div class="queue-title">${esc(j.title || j.zlib_id)}</div>
+        <div class="queue-title">${j.source === "annas" ? '<span class="badge">AA</span> ' : ""}${esc(j.title || j.zlib_id)}</div>
         ${j.authors ? `<div class="result-sub">${esc(j.authors)}</div>` : ""}
         <div class="bar ${j.status === "downloading" && !j.bytes_total ? "indeterminate" : ""}${j.status === "processing" ? " indeterminate" : ""}"><div class="bar-fill" style="width:${barWidth(j)}%"></div></div>
         <div class="queue-state ${j.status === "failed" ? "failed" : ""}">${esc(jobStatusLine(j))}</div>

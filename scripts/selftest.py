@@ -219,6 +219,36 @@ def main():
     for jid in pair_ids:
         cx.delete(f"{BASE}/api/zlib/queue/{jid}", headers={"Authorization": f"Bearer {t_alice}"})
 
+    # 15c. anna's archive routes: same hermeticity story as z-lib — CI has no key
+    # so search 503s and jobs fail fast with a readable error. The id is md5-validated
+    # at the door; a fake-but-wellformed md5 keeps the probe inert even where a real
+    # member key exists (upstream answers "Invalid md5").
+    r = cx.get(f"{BASE}/api/annas/search", params={"q": "x"}, headers={"Authorization": f"Bearer {t_alice}"})
+    check("annas no-500 invariant", r.status_code in (200, 503), str(r.status_code))
+    r = cx.post(f"{BASE}/api/annas/queue", json={"id": "not-an-md5", "name": "x"},
+                headers={"Authorization": f"Bearer {t_alice}"})
+    check("annas queue rejects non-md5", r.status_code == 400, r.text[:120])
+    ajob = cx.post(f"{BASE}/api/annas/queue",
+                   json={"id": "0" * 32, "name": "Annas Probe", "authors": "A. Archive",
+                         "extension": "epub", "size": "1 MB"},
+                   headers={"Authorization": f"Bearer {t_alice}"}).json()
+    check("annas enqueue tags source", bool(ajob.get("id")) and ajob.get("source") == "annas",
+          str(ajob)[:200])
+    handled = None
+    for _ in range(30):  # config errors fail fast; upstream errors show attempts>=1
+        jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+        handled = next((j for j in jobs if j["id"] == ajob["id"]), None)
+        if handled and (handled["status"] == "failed" or handled["attempts"] >= 1):
+            break
+        time.sleep(1)
+    check("annas job records readable error", handled is not None and bool(handled["error"]),
+          str(handled)[:200] if handled else "job missing")
+    if handled and handled["status"] == "failed":
+        r = cx.post(f"{BASE}/api/annas/queue/{ajob['id']}/retry", headers={"Authorization": f"Bearer {t_alice}"})
+        check("annas retry", r.status_code == 200, r.text[:200])
+    r = cx.delete(f"{BASE}/api/zlib/queue/{ajob['id']}", headers={"Authorization": f"Bearer {t_alice}"})
+    check("annas delete", r.status_code == 200, r.text[:200])
+
     # 15. static frontend must serve (a bad catch-all route 404s reader.html
     # — shipped once because nothing checked it) and revalidate on load
     for path, label in [("/", "index served"), ("/reader.html", "reader page served"),

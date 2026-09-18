@@ -8,15 +8,16 @@ from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, metadata, opds
+from .annas_client import AnnasConfigError, AnnasUnavailable, annas
 from .auth import UserDep, hash_password, make_token, verify_password
 from .storage import book_path, cover_path, sha256_file, store_file
+from .webfetch import _fetch_bytes, _resolve_public_ip
 from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -360,63 +361,31 @@ def zlib_queue_retry(job_id: int, user=UserDep):
     return {"ok": True}
 
 
-MAX_COVER_BYTES = 5 * 1024 * 1024
+# ---------- anna's archive (env-gated, member secret key) ----------
 
-
-async def _resolve_public_ip(host: str) -> str | None:
-    """THE single DNS resolution for a cover fetch — validation and dial use the
-    same answer, so rebinding can't diverge them. Non-blocking (loop executor).
-    None unless every resolved address is global (no loopback/private/link-local)."""
-    import ipaddress
+@app.get("/api/annas/search")
+async def annas_search(q: str, user=UserDep):
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
-    except Exception:
-        return None
-    if not infos or not all(ipaddress.ip_address(i[4][0]).is_global for i in infos):
-        return None
-    return infos[0][4][0]
+        return {"results": await annas.search(q)}
+    except AnnasUnavailable as e:
+        raise HTTPException(503, str(e))
 
 
-async def _fetch_bytes(url: str) -> bytes | None:
-    try:
-        for _ in range(5):  # follow redirects manually: re-validate every hop
-            u = httpx.URL(url)
-            if u.scheme not in ("http", "https") or not u.host:
-                return None
-            ip = await _resolve_public_ip(u.host)
-            if ip is None:
-                return None
-            # dial the validated IP directly; restore Host + TLS identity.
-            # Fresh client per hop: pools key on the pinned origin, so a hop to
-            # another host on the same IP must not reuse another name's TLS.
-            pinned = u.copy_with(host=ip)
-            ext = {"sni_hostname": u.host} if u.scheme == "https" else {}
-            try:
-                async with httpx.AsyncClient(timeout=10, follow_redirects=False) as cx:
-                    async with cx.stream("GET", str(pinned),
-                                         headers={"Host": u.netloc.decode("ascii")},
-                                         extensions=ext) as r:
-                        if r.status_code in (301, 302, 303, 307, 308):
-                            loc = r.headers.get("location", "")
-                            if not loc:
-                                return None  # 3xx without Location: don't spin 5 hops
-                            url = str(u.join(loc))
-                            continue  # next hop: fresh client, re-validated pin
-                        if r.status_code != 200:
-                            return None
-                        if int(r.headers.get("content-length") or 0) > MAX_COVER_BYTES:
-                            return None
-                        buf = bytearray()  # streamed: a lying Content-Length can't balloon RAM
-                        async for chunk in r.aiter_bytes(1 << 16):
-                            buf += chunk
-                            if len(buf) > MAX_COVER_BYTES:
-                                return None
-                        return bytes(buf) or None
-            except httpx.HTTPError:
-                return None
-    except Exception:
-        return None
-    return None
+@app.post("/api/annas/queue")
+def annas_enqueue(req: ZlibQueueReq, user=UserDep):
+    # id is the book's md5 from the search page — validate before it reaches URLs
+    if not re.fullmatch(r"[a-f0-9]{32}", req.id or ""):
+        raise HTTPException(400, "anna's archive md5 required")
+    with db.conn() as con:
+        con.execute(
+            """INSERT OR IGNORE INTO download_jobs
+               (user_id, zlib_id, title, authors, cover_url, ext, size_text, source)
+               VALUES(?,?,?,?,?,?,?, 'annas')""",
+            (user["id"], req.id, req.name, req.authors, req.cover,
+             (req.extension or "").lower(), req.size))
+        row = con.execute("SELECT * FROM download_jobs WHERE user_id=? AND zlib_id=?",
+                          (user["id"], req.id)).fetchone()
+    return dict(row)
 
 
 # ---------- download queue worker ----------
@@ -460,33 +429,44 @@ def _claim_next_job() -> dict | None:
         return dict(row)
 
 
+def _job_backoff(jid: int, job: dict, e: Exception) -> None:
+    """Shared retry ladder (both sources): 3 attempts, backoff 5/30 min."""
+    attempts = job["attempts"] + 1
+    if attempts >= MAX_ATTEMPTS:
+        _job_update(jid, status="failed", error=str(e)[:300], attempts=attempts,
+                    bytes_done=None, bytes_total=None, next_attempt_at=None)
+    else:
+        _job_update(jid, status="queued", error=str(e)[:300], attempts=attempts,
+                    bytes_done=None, bytes_total=None,
+                    next_attempt_at=_now_str(BACKOFF_MIN[attempts - 1]))
+
+
 async def _run_job(job: dict) -> None:
     jid = job["id"]
     try:
-        limits = await zlib.limits()
-        if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
-            # quota exhausted: re-check when the daily window may have reset
-            _job_update(jid, status="waiting_quota", next_attempt_at=_now_str(QUOTA_RECHECK_MIN))
-            return
-    except ZlibUnavailable:
-        pass  # quota probe failed — attempt the download anyway
-    try:
-        data, meta = await zlib.download(
-            job["zlib_id"],
-            on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
-            expected_size=parse_size(job["size_text"]))
-    except ZlibConfigError as e:
+        if job.get("source") == "annas":
+            data, meta = await annas.download(
+                job["zlib_id"],
+                on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
+                expected_size=parse_size(job["size_text"]))
+        else:
+            try:
+                limits = await zlib.limits()
+                if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
+                    # quota exhausted: re-check when the daily window may have reset
+                    _job_update(jid, status="waiting_quota", next_attempt_at=_now_str(QUOTA_RECHECK_MIN))
+                    return
+            except ZlibUnavailable:
+                pass  # quota probe failed — attempt the download anyway
+            data, meta = await zlib.download(
+                job["zlib_id"],
+                on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
+                expected_size=parse_size(job["size_text"]))
+    except (ZlibConfigError, AnnasConfigError) as e:
         _job_update(jid, status="failed", error=str(e)[:300], next_attempt_at=None)
         return
-    except ZlibUnavailable as e:
-        attempts = job["attempts"] + 1
-        if attempts >= MAX_ATTEMPTS:
-            _job_update(jid, status="failed", error=str(e)[:300], attempts=attempts,
-                        bytes_done=None, bytes_total=None, next_attempt_at=None)
-        else:
-            _job_update(jid, status="queued", error=str(e)[:300], attempts=attempts,
-                        bytes_done=None, bytes_total=None,
-                        next_attempt_at=_now_str(BACKOFF_MIN[attempts - 1]))
+    except (ZlibUnavailable, AnnasUnavailable) as e:
+        _job_backoff(jid, job, e)
         return
     _job_update(jid, status="processing", bytes_done=None, bytes_total=None)
     ext = Path(meta["_filename"]).suffix.lower().lstrip(".") or job["ext"]
@@ -497,7 +477,9 @@ async def _run_job(job: dict) -> None:
     tmp = Path(name)
     try:
         tmp.write_bytes(data)
-        await _ingest(tmp, meta["_filename"], "zlibrary", job["user_id"],
+        await _ingest(tmp, meta["_filename"],
+                      "annas-archive" if job.get("source") == "annas" else "zlibrary",
+                      job["user_id"],
                       fallback={"name": job["title"], "authors": job["authors"],
                                 "cover": job["cover_url"]})
     finally:

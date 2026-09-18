@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS download_jobs(
   bytes_done INTEGER,
   bytes_total INTEGER,
   next_attempt_at TEXT,
+  source TEXT NOT NULL DEFAULT 'zlibrary',
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(user_id, zlib_id)
@@ -112,3 +113,7 @@ def conn() -> sqlite3.Connection:
 def init() -> None:
     with conn() as c:
         c.executescript(SCHEMA)
+        # pre-existing DBs: CREATE TABLE IF NOT EXISTS won't add new columns
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(download_jobs)")}
+        if "source" not in cols:
+            c.execute("ALTER TABLE download_jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'zlibrary'")

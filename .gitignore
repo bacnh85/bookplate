@@ -7,3 +7,4 @@ __pycache__/
 agents/plans
 .agents/
 .pi/
+*.swp

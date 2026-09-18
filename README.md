@@ -1,7 +1,8 @@
 # Bookplate — self-hosted ebook library
 
 Self-hosted multi-user ebook library: upload with auto-metadata, hash dedup,
-in-browser reading, z-library search/download (optional), user-to-user sharing,
+in-browser reading, z-library search/download (optional), Anna's Archive
+search/download (optional, member key), user-to-user sharing,
 OPDS for iOS reader apps, AI metadata fallback (optional).
 
 ## Deploy with Docker
@@ -52,6 +53,10 @@ below (`.env.local` is only a local-dev convenience, never used in Docker):
   into the image; with credentials set it auto-logs-in on demand and re-logins if a
   session expires (the session is per-container and re-establishes after restarts).
   Mirror rotting? Set `ZLIB_DOMAIN` (`zlib doctor --eapi` lists healthy mirrors).
+- `ANNAS_ARCHIVE_SECRET_KEY` — Anna's Archive search/download. This is the member
+  secret key from your AA account page; it both authenticates the site (search) and
+  authorizes fast downloads. Mirror rotting? Set `ANNAS_BASE_URL`
+  (default `https://annas-archive.gd`). See the Anna's Archive section below.
 
 ### Notes
 
@@ -96,6 +101,8 @@ gitignored too; recreate provider keys there on the target host.
 |---|---|
 | `ZLIB_EMAIL` / `ZLIB_PASSWORD` | Your Z-Library account — used to auto-login the `zlib` CLI when no session exists or one expires |
 | `ZLIB_DOMAIN` | Override the auto-login mirror (default `https://z-lib.gd`); check healthy mirrors with `zlib doctor --eapi` |
+| `ANNAS_ARCHIVE_SECRET_KEY` | Your Anna's Archive account secret key (account page) — required for both search and download |
+| `ANNAS_BASE_URL` | Override the Anna's Archive mirror (default `https://annas-archive.gd`) |
 | `ZAI_API_KEY` | AI metadata fallback for garbage files (any OpenAI-compatible provider) |
 | `ZAI_BASE_URL` / `ZAI_MODEL` | Defaults: `https://api.z.ai/api/openai/v1`, `glm-5.3-flash` |
 
@@ -107,6 +114,32 @@ brew install heartleo/tap/zlib
 zlib doctor --eapi                        # pick a 'healthy' domain (e.g. z-lib.gd)
 zlib login --eapi --email you@x --password ... --domain https://z-lib.gd
 ```
+
+### Anna's Archive (member key + free slow downloads)
+
+Anna's Archive has one official member API — fast downloads — and no search API:
+search scrapes the site's HTML with your key's session (which also skips the
+DDoS-Guard bot check that anonymous visitors get). Downloads use the guard-exempt
+`/dyn/api/fast_download.json` endpoint.
+
+Downloads work with OR without a membership:
+
+- **Member account** → instant fast downloads via the official API.
+- **Free account** → the app automatically falls back to AA's free "slow partner
+  servers" (the same ones the website offers). One is usually immediate; others
+  have a waitlist of up to ~10 minutes that the queue waits out for you. No
+  membership needed — no account is even required for this path.
+
+Practical notes:
+
+- The secret key authenticates search; it lives only in env, the derived session
+  cookie only in server RAM.
+- DDoS-Guard decisions are per-IP: if your server's IP is flagged, search (and
+  the slow-download pages) get a bot check the server can't pass. Fix: open the
+  mirror in a normal browser **on the same network** and complete the checkbox
+  once — the clearance is IP-wide. Member fast downloads are unaffected.
+- AA rotates domains; if the default mirror dies, point `ANNAS_BASE_URL` at a
+  current one (mirrors are listed on the AA site/FAQ).
 
 Add keys to `.env.local`, then restart: `kill $(cat data/serve.pid)` and start
 again. No web settings UI — secrets stay out of the database and out of git.
@@ -127,6 +160,7 @@ again. No web settings UI — secrets stay out of the database and out of git.
 ## Layout
 
 - `app/` — FastAPI: `db.py` (SQLite+FTS5), `auth.py`, `storage.py` (SHA-256 store),
-  `metadata.py` (extraction chain), `ai.py`, `zlib_client.py`, `opds.py`, `main.py`
+  `metadata.py` (extraction chain), `ai.py`, `zlib_client.py`, `annas_client.py`,
+  `webfetch.py` (SSRF-pinned fetches), `opds.py`, `main.py`
 - `web/` — vanilla JS SPA + vendored `foliate-js` (no build step)
 - `data/` — SQLite DB, content-addressed book files, covers (gitignored)

@@ -79,6 +79,11 @@ button:active:not(:disabled) { transform: translateY(1px); }
 main { max-width: 1200px; margin: 0 auto; padding: 24px; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
 .toolbar input[type="text"] { flex: 1; min-width: 200px; }
+.source-toggle { display: flex; gap: 0; flex-wrap: wrap; }
+.source-toggle .btn-ghost + .btn-ghost { margin-left: -1px; }  /* joined segmented control */
+.source-toggle .btn-ghost:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.source-toggle .btn-ghost:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.source-toggle .btn-ghost.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .grid {
   display: grid; gap: 24px;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));

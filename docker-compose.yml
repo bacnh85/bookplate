@@ -16,6 +16,8 @@ services:
     #   ZLIB_EMAIL: ...             # Z-Library account (search/download)
     #   ZLIB_PASSWORD: ...
     #   ZLIB_DOMAIN: https://z-lib.gd   # optional; only if the default mirror rots
+    #   ANNAS_ARCHIVE_SECRET_KEY: ...   # Anna's Archive member key (search/download)
+    #   ANNAS_BASE_URL: https://annas-archive.gd   # optional; only if the mirror rots
 
 volumes:
   bookplate-data:
