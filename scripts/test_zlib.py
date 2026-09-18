@@ -30,6 +30,16 @@ class ZlibTests(unittest.TestCase):
         which = mock.patch("app.zlib_client.shutil.which", return_value="/usr/bin/zlib")
         which.start()
         self.addCleanup(which.stop)
+        # hermetic home WITH a session: _ensure_session skips login identically
+        # on every host; tests exercising the login path override home locally
+        fake_home = pathlib.Path(tempfile.gettempdir()) / "zlib-test-default-home"
+        (fake_home / ".config" / "zlib").mkdir(parents=True, exist_ok=True)
+        (fake_home / ".config" / "zlib" / "session.json").write_text("{}")
+        self.addCleanup(
+            lambda: (fake_home / ".config" / "zlib" / "session.json").unlink(missing_ok=True))
+        home = mock.patch("pathlib.Path.home", return_value=fake_home)
+        home.start()
+        self.addCleanup(home.stop)
 
     def test_enabled_requires_cli(self):
         with mock.patch("app.zlib_client.shutil.which", return_value=None):
@@ -84,6 +94,29 @@ class ZlibTests(unittest.TestCase):
         with mock.patch.object(Zlib, "_run", fake_run):
             with self.assertRaises(ZlibUnavailable):
                 run(Zlib().search("q"))
+
+    def test_non_dict_json_maps_to_503(self):
+        async def fake_run(self, *args, **k):
+            return 0, "[1,2]", ""  # valid JSON, wrong shape — must 503, not 500
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            with self.assertRaises(ZlibUnavailable):
+                run(Zlib().search("q"))
+            with self.assertRaises(ZlibUnavailable):
+                run(Zlib().limits())
+
+    def test_transient_failure_does_not_relogin(self):
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            calls.append(args[0])
+            return 1, "", "mirror said no"  # not an auth failure — keep the session
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            with self.assertRaises(ZlibUnavailable) as cm:
+                run(Zlib().search("q"))
+        self.assertEqual(calls, ["search"])
+        self.assertIn("mirror said no", str(cm.exception))
 
     def test_limits_parses_json(self):
         async def fake_run(self, *args, **k):
@@ -177,7 +210,6 @@ class ZlibTests(unittest.TestCase):
             calls.append(args[0])
             return 0, "", ""
 
-        real_home = pathlib.Path.home()
         fake_config = pathlib.Path(tempfile.gettempdir()) / "zlib-test-home"
         (fake_config / ".config" / "zlib").mkdir(parents=True, exist_ok=True)
         (fake_config / ".config" / "zlib" / "session.json").write_text("{}")
@@ -186,7 +218,6 @@ class ZlibTests(unittest.TestCase):
                 run(Zlib()._ensure_session())
         self.assertNotIn("login", calls)
         (fake_config / ".config" / "zlib" / "session.json").unlink(missing_ok=True)
-        self.assertEqual(real_home.exists(), True)
 
 
 

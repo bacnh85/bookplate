@@ -146,17 +146,20 @@ async function showQuota() {
 }
 
 let zlibTimer;
+let zlibSearchSeq = 0;  // discard stale responses from overlapping searches
 $("#zlib-search").oninput = (e) => {
   clearTimeout(zlibTimer);
   zlibTimer = setTimeout(() => zlibSearch(e.target.value), 400);
 };
 async function zlibSearch(q) {
+  const seq = ++zlibSearchSeq;
   $("#zlib-error").textContent = "";
   if (!q.trim()) { $("#zlib-results").innerHTML = ""; return; }
   const box = $("#zlib-results");
   box.innerHTML = `<div class="skeleton" style="height:84px"></div>`;
   try {
     const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(q)}`);
+    if (seq !== zlibSearchSeq) return;  // a newer search superseded this one
     box.innerHTML = "";
     if (!results.length) { box.innerHTML = `<div class="empty">No results.</div>`; return; }
     results.forEach((r, i) => box.append(resultRow(r, i + 1)));
@@ -212,8 +215,8 @@ function openDetail(r) {
   const dl = $("#detail-download");
   dl.disabled = false; dl.textContent = "Download";
   const link = $("#detail-zlib");
-  link.hidden = !r.url;
-  if (r.url) link.href = r.url;
+  link.hidden = true;  // third-party data: only http(s) becomes clickable
+  if (r.url && /^https?:\/\//i.test(r.url)) { link.href = r.url; link.hidden = false; }
   const facts = $("#detail-facts");
   facts.innerHTML = "";
   const add = (k, v) => {
@@ -260,11 +263,13 @@ async function loadRelated(r) {
   const section = $("#detail-related");
   const author = (r.authors || "").split(",")[0].trim();
   if (!author) { section.hidden = true; return; }
+  const seq = ++zlibSearchSeq;  // share the search sequence: last openDetail wins
   $("#related-title").textContent = `More by ${author}`;
   $("#related-strip").innerHTML = `<div class="skeleton" style="height:96px"></div>`;
   section.hidden = false;
   try {
     const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(author)}`);
+    if (seq !== zlibSearchSeq || detailBook?.id !== r.id) return;
     const rel = results.filter((b) => b.id !== r.id).slice(0, 6);
     if (!rel.length) { section.hidden = true; return; }
     const strip = $("#related-strip");

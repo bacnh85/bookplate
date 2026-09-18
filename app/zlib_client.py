@@ -88,10 +88,15 @@ class Zlib:
 
     async def _run_authed(self, *args: str, timeout: float = 90):
         """Run a session-requiring command; on failure, force one re-login and retry
-        (covers sessions that expired on disk — _ensure_session can't see that).
-        Exactly one retry: the follow-up runs via plain _run, not recursively."""
+        when the failure looks like an auth/session problem (covers sessions that
+        expired on disk — _ensure_session can't see that). Other failures return
+        unchanged: no re-auth on transient mirror errors (a logout would wipe a
+        still-valid session). Exactly one retry: the follow-up runs via plain
+        _run, not recursively."""
         rc, out, err = await self._run(*args, timeout=timeout)
         if rc == 0 or not self._creds():
+            return rc, out, err
+        if not any(s in (err + out).lower() for s in ("session", "login", "auth", "401")):
             return rc, out, err
         await self._run("logout", timeout=30)  # best effort: drop the stale session
         await self._login()
@@ -103,8 +108,11 @@ class Zlib:
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library search failed: {(err or out).strip()[:200]}")
         try:
-            books = json.loads(out).get("books", [])
-        except json.JSONDecodeError as e:
+            parsed = json.loads(out)
+            books = parsed.get("books", []) if isinstance(parsed, dict) else None
+            if books is None:
+                raise ValueError("unexpected JSON shape")
+        except (json.JSONDecodeError, ValueError) as e:
             raise ZlibUnavailable(f"Z-Library search returned junk: {e}") from e
         return [{
             "id": str(b.get("id", "")), "name": b.get("name", ""),
@@ -124,8 +132,11 @@ class Zlib:
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library profile failed: {(err or out).strip()[:200]}")
         try:
-            return json.loads(out)
-        except json.JSONDecodeError as e:
+            parsed = json.loads(out)
+            if not isinstance(parsed, dict):
+                raise ValueError("unexpected JSON shape")
+            return parsed
+        except (json.JSONDecodeError, ValueError) as e:
             raise ZlibUnavailable(f"Z-Library profile returned junk: {e}") from e
 
     async def download(self, book_id: str) -> tuple[bytes, dict]:
