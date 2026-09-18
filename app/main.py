@@ -331,14 +331,16 @@ def opds_catalog(request: Request, user=UserDep):
 
 # ---------- frontend ----------
 
-@app.get("/{asset}", include_in_schema=False)
-def web_asset(asset: str):
-    """JS/CSS must revalidate each load (ETag -> 304 when unchanged): browsers
-    otherwise heuristic-cache them and keep running a stale frontend after a
-    deploy. Must be defined before the StaticFiles mount below."""
-    if asset not in {"app.js", "app.css", "reader.js"}:
-        raise HTTPException(404)
-    return FileResponse(WEB_DIR / asset, headers={"Cache-Control": "no-cache"})
+class NoCacheStaticFiles(StaticFiles):
+    """Revalidate every asset each load (ETag -> 304 when unchanged): browsers
+    otherwise heuristic-cache JS/HTML and keep running a stale frontend after a
+    deploy. Stamp every file response rather than intercepting routes — a
+    catch-all route 404s sibling files (reader.html was the casualty)."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
-app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+app.mount("/", NoCacheStaticFiles(directory=WEB_DIR, html=True), name="web")
