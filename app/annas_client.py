@@ -243,11 +243,13 @@ class Annas:
             except _Challenge:
                 # The guard decision is per-IP (cookies don't clear it once an IP
                 # is flagged). A human completing the checkbox once in any browser
-                # on this network clears it IP-wide; /dyn/api/* stays exempt either way.
+                # on this network clears it IP-wide. Only members' fast downloads
+                # (/dyn/api/*) are exempt from the guard.
                 raise AnnasUnavailable(
                     "Anna's Archive bot check (DDoS-Guard): open "
                     f"{self._base()} in a browser on this server's network and complete "
-                    "the check once (fast downloads are unaffected)")
+                    "the check once — after that, search and downloads work "
+                    "(members' fast downloads work even without this)")
 
     async def search(self, q: str, count: int = 20) -> list[dict]:
         r = await self._fetch_authed(f"{self._base()}/search?q={quote_plus(q)}")

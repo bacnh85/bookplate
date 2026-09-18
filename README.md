@@ -137,7 +137,7 @@ Practical notes:
 - DDoS-Guard decisions are per-IP: if your server's IP is flagged, search (and
   the slow-download pages) get a bot check the server can't pass. Fix: open the
   mirror in a normal browser **on the same network** and complete the checkbox
-  once — the clearance is IP-wide. Member fast downloads are unaffected.
+  once — the clearance is IP-wide; member fast downloads are unaffected by the guard.
 - AA rotates domains; if the default mirror dies, point `ANNAS_BASE_URL` at a
   current one (mirrors are listed on the AA site/FAQ).
 
