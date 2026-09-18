@@ -6,6 +6,7 @@ scripts/fetch_annas_fixture.py for how to refresh it).
 Run: .venv/bin/python scripts/test_annas.py
 """
 import asyncio
+import hashlib
 import os
 import pathlib
 import sys
@@ -28,6 +29,10 @@ MD5 = "ab" * 16
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def md5of(b: bytes) -> str:
+    return hashlib.md5(b).hexdigest()
 
 
 class FakeAsyncClient:
@@ -177,6 +182,15 @@ class LoginTests(unittest.TestCase):
         self.assertIn("aa_account_id2=abc", self.annas._cookie)
         self.assertIn("__ddg1_=xyz", self.annas._cookie)
 
+    def test_challenged_login_is_retryable(self):
+        # guard challenge on POST /account/ issues no aa_* cookie — must surface
+        # the retryable browser hint, not a permanent "bad key" config error
+        with with_client([challenge()]):
+            with self.assertRaises(AnnasUnavailable) as cm:
+                run(self.annas._login())
+        self.assertIn("browser", str(cm.exception))
+        self.assertEqual(self.annas._cookie, "")
+
     def test_bad_key_with_ddg_cookies_still_fails(self):
         # the guard sets __ddg* even on the rejected login form — only an aa_*
         # cookie means success, else a dead session gets cached
@@ -225,6 +239,13 @@ class SearchTests(unittest.TestCase):
             rows = run(self.annas.search("q"))
         self.assertGreaterEqual(len(rows), 10)
 
+    def test_challenge_then_success_recovers(self):
+        # fresh cookie, first hop challenged: the relogin-once ladder must recover
+        self.annas._cookie, self.annas._cookie_at = "aa_account_id2=x", time.monotonic()
+        with with_client([challenge(), login_resp(), resp(200, text=FIXTURE.read_text())]):
+            rows = run(self.annas.search("q"))
+        self.assertGreaterEqual(len(rows), 10)
+
     def test_cross_origin_redirect_drops_session_cookie(self):
         # a hostile/injected redirect must not carry the member session off-host
         self.annas._cookie, self.annas._cookie_at = "aa_account_id2=secret", time.monotonic()
@@ -262,13 +283,14 @@ class DownloadTests(unittest.TestCase):
         self.annas = Annas()
 
     def test_happy_path(self):
+        content = b"EPUB!"
         api = resp(200, json_body={"download_url": "https://partner.example/get/book.epub",
                                    "account_fast_download_info": {"downloads_left": 5}})
         with with_client([api]), \
              mock.patch("app.annas_client._fetch_bytes",
-                        lambda *a, **k: _async_bytes(b"EPUB!")):
-            data, meta = run(self.annas.download(MD5))
-        self.assertEqual(data, b"EPUB!")
+                        lambda *a, **k: _async_bytes(content)):
+            data, meta = run(self.annas.download(md5of(content)))
+        self.assertEqual(data, content)
         self.assertTrue(meta["_filename"].endswith(".epub"))
 
     def test_not_a_member_falls_back_to_slow(self):
@@ -287,6 +309,16 @@ class DownloadTests(unittest.TestCase):
         with with_client([api]):
             with self.assertRaises(AnnasUnavailable):
                 run(self.annas.download(MD5))
+
+    def test_wrong_content_md5_rejected(self):
+        # an expired/wrong partner link serving a 200 body that isn't the book
+        api = resp(200, json_body={"download_url": "https://partner.example/get/book.epub"})
+        with with_client([api]), \
+             mock.patch("app.annas_client._fetch_bytes",
+                        lambda *a, **k: _async_bytes(b"<html>not the book</html>")):
+            with self.assertRaises(AnnasUnavailable) as cm:
+                run(self.annas.download(md5of(b"EPUB!")))
+        self.assertIn("md5", str(cm.exception))
 
     def test_bad_key_fails_fast_without_slow_fallback(self):
         api = resp(200, json_body={"download_url": None, "error": "Invalid key"})
@@ -310,12 +342,13 @@ class DownloadTests(unittest.TestCase):
 
     def test_url_ext_whitelist(self):
         # .php in a query-shaped URL must not become the extension
+        content = b"x"
         api = resp(200, json_body={"download_url": "https://x/get.php?md5=ab"})
         with with_client([api]), \
              mock.patch("app.annas_client._fetch_bytes",
-                        lambda *a, **k: _async_bytes(b"x")):
-            _, meta = run(self.annas.download(MD5))
-        self.assertEqual(meta["_filename"], MD5)  # unusable name: worker falls back to job ext
+                        lambda *a, **k: _async_bytes(content)):
+            _, meta = run(self.annas.download(md5of(content)))
+        self.assertEqual(meta["_filename"], md5of(content))  # unusable name: job ext wins
 
 
 class SlowDownloadTests(unittest.TestCase):
@@ -332,6 +365,7 @@ class SlowDownloadTests(unittest.TestCase):
     WAITING = ('<div class="mb-4 font-bold text-xl">Please wait '
                '<span class="js-partner-countdown">123</span> seconds</div>\n'
                '<script>\n  let waitSeconds = 123;\n</script>')
+    WAIT600 = WAITING.replace("123", "600")
 
     def test_page_info_extraction(self):
         url, wait = _slow_page_info(self.READY)
@@ -344,14 +378,16 @@ class SlowDownloadTests(unittest.TestCase):
 
     def test_slow_immediate_link(self):
         ready = self.READY
+        content = b"PDFDATA"
+        book_md5 = md5of(content)
 
         async def fake_authed(self, url):
             return resp(200, text=ready)
         with mock.patch.object(Annas, "_fetch_authed", fake_authed), \
              mock.patch("app.annas_client._fetch_bytes",
-                        lambda *a, **k: _async_bytes(b"PDFDATA")):
-            data, meta = run(self.annas._slow_download(MD5, None, None))
-        self.assertEqual(data, b"PDFDATA")
+                        lambda *a, **k: _async_bytes(content)):
+            data, meta = run(self.annas._slow_download(book_md5, None, None))
+        self.assertEqual(data, content)
         self.assertEqual(meta["_filename"], "Terraform Up and Running.pdf")
 
     def test_slow_waitlist_reloads(self):
@@ -364,13 +400,38 @@ class SlowDownloadTests(unittest.TestCase):
 
         async def fake_authed(self, url):
             return next(pages)
+        content = b"PDFDATA"
         with mock.patch.object(Annas, "_fetch_authed", fake_authed), \
              mock.patch("app.annas_client.asyncio.sleep", fake_sleep), \
              mock.patch("app.annas_client._fetch_bytes",
-                        lambda *a, **k: _async_bytes(b"PDFDATA")):
-            data, meta = run(self.annas._slow_download(MD5, None, None))
-        self.assertEqual(data, b"PDFDATA")
+                        lambda *a, **k: _async_bytes(content)):
+            data, meta = run(self.annas._slow_download(md5of(content), None, None))
+        self.assertEqual(data, content)
         self.assertGreaterEqual(sum(sleeps), 123)  # waited out the waitlist
+
+    def test_slow_wait_budget_bounded_with_heartbeat(self):
+        # waitlisted servers must not pin the queue ~1h: total wait is capped at
+        # SLOW_MAX_WAIT_S and the heartbeat fires during waits
+        waits = []
+
+        async def fake_sleep(s):
+            waits.append(s)
+
+        beats = []
+
+        def beat(done, total):
+            beats.append((done, total))
+
+        wait600 = self.WAIT600
+
+        async def fake_authed(self, url):
+            return resp(200, text=wait600)
+        with mock.patch.object(Annas, "_fetch_authed", fake_authed), \
+             mock.patch("app.annas_client.asyncio.sleep", fake_sleep):
+            with self.assertRaises(AnnasUnavailable):
+                run(self.annas._slow_download(MD5, beat, 1000))
+        self.assertLessEqual(sum(waits), 610)  # was ~1800s+ before the budget
+        self.assertGreater(len(beats), 0)      # heartbeat kept the row fresh
 
     def test_slow_gives_up_readable(self):
         async def fake_authed(self, url):

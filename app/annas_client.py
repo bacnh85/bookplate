@@ -14,6 +14,7 @@ never logged or persisted. Search HTML parsing is per-card isolated so one
 malformed result can't poison the rest; md5s are validated 32-hex (untrusted input).
 """
 import asyncio
+import hashlib
 import html
 import os
 import re
@@ -52,6 +53,12 @@ _D3_URL_RE = re.compile(r'href="(https?://[^"]+/d3/[^"]+)"')
 _WAIT_RE = re.compile(r'waitSeconds\s*=\s*(\d+)')
 _GOOD_FILE_EXTS = {"pdf", "epub", "mobi", "azw", "azw3", "fb2", "djvu", "cbz",
                    "cbr", "txt", "rtf", "lit", "zip", "doc", "docx"}
+
+
+def _guard_hint(base: str) -> str:
+    return (f"Anna's Archive bot check (DDoS-Guard): open {base} in a browser on this "
+            "server's network and complete the check once — after that, search and "
+            "downloads work (members' fast downloads work even without this)")
 
 
 class AnnasUnavailable(Exception):
@@ -194,6 +201,11 @@ class Annas:
                                   headers=HEADERS)
         except httpx.HTTPError as e:
             raise AnnasUnavailable(f"Anna's Archive unreachable: {e}") from e
+        if _is_challenge(r):
+            # a guard-challenged login issues no aa_* cookie — without this check
+            # it would masquerade as "rejected the secret key" (permanent) instead
+            # of the retryable bot-check hint
+            raise AnnasUnavailable(_guard_hint(self._base()))
         # success REQUIRES an aa_* session cookie — the guard issues __ddg* even on
         # the bad-key form, so accepting any cookie would cache a dead session and
         # resurface as a misleading "bot check" later
@@ -241,15 +253,7 @@ class Annas:
             try:
                 return await once()
             except _Challenge:
-                # The guard decision is per-IP (cookies don't clear it once an IP
-                # is flagged). A human completing the checkbox once in any browser
-                # on this network clears it IP-wide. Only members' fast downloads
-                # (/dyn/api/*) are exempt from the guard.
-                raise AnnasUnavailable(
-                    "Anna's Archive bot check (DDoS-Guard): open "
-                    f"{self._base()} in a browser on this server's network and complete "
-                    "the check once — after that, search and downloads work "
-                    "(members' fast downloads work even without this)")
+                raise AnnasUnavailable(_guard_hint(self._base()))
 
     async def search(self, q: str, count: int = 20) -> list[dict]:
         r = await self._fetch_authed(f"{self._base()}/search?q={quote_plus(q)}")
@@ -294,18 +298,22 @@ class Annas:
                              expected_size: int | None) -> tuple[bytes, dict]:
         target = f"{self._base()}/slow_download/{md5}/0/{{}}"
         last = "no slow server offered a link"
-        for domain_index in SLOW_DOMAIN_INDICES:
+        wait_budget = SLOW_MAX_WAIT_S  # cumulative across indices: one slow job
+        for domain_index in SLOW_DOMAIN_INDICES:  # must not pin the queue ~1h
             r = await self._fetch_authed(target.format(domain_index))
             if r.status_code != 200:
                 last = f"slow_download HTTP {r.status_code}"
                 continue
             url, wait_s = _slow_page_info(r.text)
-            if url is None and wait_s is not None and wait_s <= SLOW_MAX_WAIT_S:
+            if url is None and wait_s is not None and wait_s <= min(SLOW_MAX_WAIT_S, wait_budget):
                 waited = 0
-                while waited < wait_s:  # keep the worker's job row fresh (stale reclaim is 15 min)
+                while waited < wait_s:
                     chunk = min(SLOW_POLL_S, wait_s - waited)
                     await asyncio.sleep(chunk)
                     waited += chunk
+                    if on_progress:  # heartbeat: keeps the job row under the
+                        on_progress(0, expected_size)  # 15-min stale reclaim
+                wait_budget -= wait_s
                 r = await self._fetch_authed(target.format(domain_index))  # the site's JS just reloads
                 url, _ = _slow_page_info(r.text)
             if url:
@@ -321,6 +329,10 @@ class Annas:
         data_bytes = await _fetch_bytes(url, max_bytes=BOOK_MAX_BYTES, on_progress=_prog)
         if not data_bytes:
             raise AnnasUnavailable("Anna's Archive file fetch failed (redirect/cap/size)")
+        # an expired/wrong partner link can serve a 200 body that isn't the book —
+        # verify it actually hashes to the requested md5 before ingesting
+        if hashlib.md5(data_bytes).hexdigest() != md5:
+            raise AnnasUnavailable("Anna's Archive file failed md5 check (stale/wrong link)")
         # slow-server URLs end in the real filename ("Title (2017).pdf"); fast
         # ones don't — an unusable name falls back to md5 + the job's own ext
         name = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
