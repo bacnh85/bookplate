@@ -5,7 +5,7 @@ colors:
   paper: "#F6F3EC"       # page background, warm
   card: "#FFFDF8"        # book cards, header surface
   ink: "#26221C"         # primary text
-  ink-soft: "#6E675C"    # secondary text
+  ink-soft: "#5C5648"    # secondary text (APCA Lc>=75 on paper)
   line: "#E3DDD0"        # hairline rules
   accent: "#7C2D2D"      # oxblood — CTAs, links, active marks
   accent-ink: "#FFFDF8"  # text on accent

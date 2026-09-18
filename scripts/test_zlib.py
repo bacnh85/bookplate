@@ -53,6 +53,30 @@ class ZlibTests(unittest.TestCase):
         self.assertEqual(rows[1]["authors"], "")
         self.assertEqual(rows[1]["extension"], "")
 
+    def test_search_maps_detail_fields(self):
+        out = json.dumps({"books": [{
+            "id": "1:ab", "name": "T", "authors": ["A"], "publisher": "Hollym",
+            "year": "2013", "extension": "pdf", "size": "37.09 MB", "cover": "c",
+            "language": "English", "rating": "5.0", "quality": "4.0",
+            "isbn": "9781565912489", "url": "https://z-lib.gd/book/x.html",
+            "description": "Line one.<br>  Line two &amp; three <b>bold</b>",
+        }, {"id": "2:cd"}]})  # sparse row: detail fields default to ""
+
+        async def fake_run(self, *args, **k):
+            return 0, out, ""
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            rows = run(Zlib().search("q"))
+        row = rows[0]
+        self.assertEqual(row["publisher"], "Hollym")
+        self.assertEqual(row["quality"], "4.0")
+        self.assertEqual(row["isbn"], "9781565912489")
+        self.assertEqual(row["url"], "https://z-lib.gd/book/x.html")
+        self.assertEqual(row["description"], "Line one. Line two & three bold")
+        self.assertNotIn("<", row["description"])
+        self.assertEqual(rows[1]["publisher"], "")
+        self.assertEqual(rows[1]["description"], "")
+
     def test_search_cli_failure_maps_to_503(self):
         async def fake_run(self, *args, **k):
             return 1, "", "mirror said no"

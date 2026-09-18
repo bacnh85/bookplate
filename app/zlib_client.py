@@ -13,8 +13,10 @@ and retries once. NOTE: the CLI has no stdin/env password input, so the password
 transits argv for the duration of a login (ps-visible on multi-user hosts).
 """
 import asyncio
+import html
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -24,6 +26,14 @@ from .db import DATA_DIR
 
 class ZlibUnavailable(Exception):
     pass
+
+
+def _clean_desc(s: str) -> str:
+    """z-lib descriptions are third-party HTML — reduce to plain text.
+    Tags are stripped before entity decoding; the frontend renders this as
+    textContent, so nothing here can execute."""
+    text = re.sub(r"<[^>]+>", " ", s or "")
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()
 
 
 class Zlib:
@@ -103,6 +113,9 @@ class Zlib:
             "extension": (b.get("extension") or "").lower(),
             "size": b.get("size", ""), "cover": b.get("cover", ""),
             "language": b.get("language", ""), "rating": str(b.get("rating", "")),
+            "publisher": b.get("publisher", ""), "isbn": b.get("isbn", ""),
+            "quality": str(b.get("quality", "")), "url": b.get("url", ""),
+            "description": _clean_desc(b.get("description", "")),
         } for b in books[:count]]
 
     async def limits(self) -> dict:

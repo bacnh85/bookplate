@@ -159,35 +159,128 @@ async function zlibSearch(q) {
     const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(q)}`);
     box.innerHTML = "";
     if (!results.length) { box.innerHTML = `<div class="empty">No results.</div>`; return; }
-    for (const r of results) {
-      const row = document.createElement("div");
-      row.className = "result-row";
-      row.innerHTML = `
-        <img loading="lazy" src="${esc(r.cover)}" alt="" onerror="this.removeAttribute('src')">
-        <div>
-          <div class="result-title">${esc(r.name)}</div>
-          <div class="result-sub">${esc(r.authors || "—")} · ${esc(r.year)} · ${esc(r.extension)} · ${esc(r.size)}</div>
-        </div>
-        <button class="btn-primary">Download</button>`;
-      row.querySelector("button").onclick = async (e) => {
-        e.target.disabled = true;
-        e.target.textContent = "Fetching…";
-        try {
-          const res = await api("/api/zlib/download", { method: "POST", json: { id: r.id } });
-          e.target.textContent = "On shelf ✓";
-          switchTab("shelf");
-        } catch (err) {
-          e.target.disabled = false;
-          e.target.textContent = "Download";
-          $("#zlib-error").textContent = err.message;
-        }
-      };
-      box.append(row);
-    }
+    results.forEach((r, i) => box.append(resultRow(r, i + 1)));
   } catch (err) {
     box.innerHTML = "";
     $("#zlib-error").textContent = err.message;
   }
+}
+
+function ratingLine(r) {
+  return `★ ${r.rating || "?"}${r.quality ? ` / ${r.quality}` : ""}`;
+}
+
+function resultRow(r, rank) {
+  const row = document.createElement("div");
+  row.className = "result-row";
+  row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  row.innerHTML = `
+    <span class="rank" aria-hidden="true">${rank}</span>
+    <img loading="lazy" src="${esc(r.cover)}" alt="" onerror="this.removeAttribute('src')">
+    <div class="result-main">
+      <div class="result-title">${esc(r.name)}</div>
+      <div class="result-authors">${esc(r.authors || "—")}</div>
+      ${r.publisher ? `<div class="result-sub">${esc(r.publisher)}</div>` : ""}
+    </div>
+    <div class="result-meta">
+      ${r.year ? `<span>Year: ${esc(r.year)}</span>` : ""}
+      ${r.language ? `<span>Language: ${esc(r.language)}</span>` : ""}
+      <span>File: ${esc((r.extension || "?").toUpperCase())}${r.size ? `, ${esc(r.size)}` : ""}</span>
+      ${(r.rating || r.quality) ? `<span class="result-rating">${esc(ratingLine(r))}</span>` : ""}
+    </div>`;
+  const open = () => openDetail(r);
+  row.onclick = open;
+  row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  return row;
+}
+
+/* ---------- book detail panel ---------- */
+let detailBook = null;
+function openDetail(r) {
+  detailBook = r;
+  const dlg = $("#detail-dialog");
+  $("#detail-error").textContent = "";
+  $("#detail-quota").textContent = "";
+  const img = $("#detail-cover");
+  img.removeAttribute("src");
+  img.hidden = !r.cover;
+  if (r.cover) img.src = r.cover;
+  img.onerror = () => { img.hidden = true; };
+  $("#detail-title").textContent = r.name;
+  $("#detail-authors").textContent = r.authors || "—";
+  const dl = $("#detail-download");
+  dl.disabled = false; dl.textContent = "Download";
+  const link = $("#detail-zlib");
+  link.hidden = !r.url;
+  if (r.url) link.href = r.url;
+  const facts = $("#detail-facts");
+  facts.innerHTML = "";
+  const add = (k, v) => {
+    if (!v) return;
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    facts.append(dt, dd);
+  };
+  add("Publisher", r.publisher);
+  add("Year", r.year);
+  add("Language", r.language);
+  add("File", (r.extension || "").toUpperCase() + (r.size ? `, ${r.size}` : ""));
+  add("Rating", r.rating ? ratingLine(r) : "");
+  add("ISBN", r.isbn);
+  $("#detail-desc").textContent = r.description || "";
+  $("#detail-desc").hidden = !r.description;
+  if (!dlg.open) dlg.showModal();
+  dlg.scrollTop = 0;
+  loadRelated(r);
+  api("/api/zlib/limits").then((l) => {
+    $("#detail-quota").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
+  }).catch(() => { /* unconfigured — surfaced on download */ });
+}
+
+$("#detail-download").onclick = async () => {
+  if (!detailBook) return;
+  const btn = $("#detail-download");
+  btn.disabled = true; btn.textContent = "Fetching…";
+  $("#detail-error").textContent = "";
+  try {
+    await api("/api/zlib/download", { method: "POST", json: { id: detailBook.id } });
+    btn.textContent = "On shelf ✓";
+  } catch (err) {
+    btn.disabled = false; btn.textContent = "Download";
+    $("#detail-error").textContent = err.message;
+  }
+};
+$("#detail-close").onclick = () => $("#detail-dialog").close();
+$("#detail-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();  // backdrop click
+});
+
+async function loadRelated(r) {
+  const section = $("#detail-related");
+  const author = (r.authors || "").split(",")[0].trim();
+  if (!author) { section.hidden = true; return; }
+  $("#related-title").textContent = `More by ${author}`;
+  $("#related-strip").innerHTML = `<div class="skeleton" style="height:96px"></div>`;
+  section.hidden = false;
+  try {
+    const { results } = await api(`/api/zlib/search?q=${encodeURIComponent(author)}`);
+    const rel = results.filter((b) => b.id !== r.id).slice(0, 6);
+    if (!rel.length) { section.hidden = true; return; }
+    const strip = $("#related-strip");
+    strip.innerHTML = "";
+    for (const b of rel) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "related-item";
+      item.title = b.name;
+      item.innerHTML = `
+        <img loading="lazy" src="${esc(b.cover)}" alt="" onerror="this.remove()">
+        <span class="related-name">${esc(b.name)}</span>`;
+      item.onclick = () => openDetail(b);
+      strip.append(item);
+    }
+  } catch { section.hidden = true; }
 }
 
 /* ---------- reader ---------- */
