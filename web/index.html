@@ -24,6 +24,7 @@
     <h1 class="wordmark">Bookplate<span>.</span></h1>
     <button class="btn-ghost active" id="tab-shelf" type="button">My shelf</button>
     <button class="btn-ghost" id="tab-find" type="button" title="Search Z-Library">Find books</button>
+    <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
     <span class="spacer"></span>
     <button class="btn-primary" id="upload-btn" type="button">Add books</button>
     <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
@@ -84,6 +85,16 @@
     <div class="related-strip" id="related-strip"></div>
   </section>
 </dialog>
+
+<dialog id="downloads-dialog">
+  <button class="btn-ghost detail-close" id="downloads-close" type="button" aria-label="Close">✕</button>
+  <h2>Downloads</h2>
+  <div id="downloads-quota" class="result-sub"></div>
+  <div id="downloads-list"></div>
+  <div class="empty" id="downloads-empty" hidden>Nothing queued.<small>Use Find books, then "Get later" on a result.</small></div>
+</dialog>
+
+<div id="transfers" aria-live="polite"></div>
 
 <script type="module" src="/app.js"></script>
 </body>

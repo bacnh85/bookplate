@@ -14,6 +14,7 @@ import re
 import string
 import sys
 import stat
+import time
 from pathlib import Path
 
 import httpx
@@ -128,9 +129,10 @@ def main():
     # 8. bob cannot see alice's unshared books
     check("unshared books invisible", all(x["id"] != b3["id"] for x in bob_books))
 
-    # 9. cover
+    # 9. cover — every ingested book now ends with a cover (generated SVG fallback)
     r = cx.get(f"{BASE}/api/books/{b['id']}/cover", headers={"Authorization": f"Bearer {t_bob}"})
-    check("cover endpoint", r.status_code in (200, 404), str(r.status_code))  # 404 ok if no cover fetched
+    check("cover endpoint (fallback guarantees image)", r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"),
+          f"{r.status_code} {r.headers.get('content-type', '')}")
     check("cover cache-control private", r.status_code != 200 or r.headers.get("cache-control", "").startswith("private"),
           r.headers.get("cache-control", ""))
 
@@ -165,6 +167,57 @@ def main():
         secret = Path(__file__).resolve().parent.parent / "data" / ".secret"
         mode = stat.S_IMODE(os.stat(secret).st_mode) if secret.exists() else None
         check("secret file 0600", mode == 0o600, "missing" if mode is None else oct(mode))
+
+    # 15. download queue: enqueue is idempotent; worker records failures with a
+    # readable error; delete works. CI (no zlib CLI) must fail the job fast.
+    qjob = cx.post(f"{BASE}/api/zlib/queue",
+                   json={"id": f"fake-{rand}", "name": "Queue Probe", "authors": "Q. Auteur",
+                         "extension": "epub", "size": "1 MB"},
+                   headers={"Authorization": f"Bearer {t_alice}"}).json()
+    check("queue enqueue", bool(qjob.get("id")) and qjob["status"] in ("queued", "waiting_quota", "downloading", "processing"),
+          str(qjob)[:200])
+    jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+    check("queue list", any(j["id"] == qjob["id"] for j in jobs))
+    has_backend = cx.get(f"{BASE}/api/zlib/limits", headers={"Authorization": f"Bearer {t_alice}"}).status_code == 200
+    if not has_backend:
+        handled = None
+        for _ in range(30):  # no zlib backend: worker must record a readable error quickly
+            jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+            handled = next((j for j in jobs if j["id"] == qjob["id"]), None)
+            if handled and (handled["status"] == "failed" or handled["attempts"] >= 1):
+                break
+            time.sleep(1)
+        check("queue job records error without backend", handled is not None and bool(handled["error"]),
+              str(handled)[:200] if handled else "job missing")
+        if handled and handled["status"] == "failed":
+            r = cx.post(f"{BASE}/api/zlib/queue/{qjob['id']}/retry", headers={"Authorization": f"Bearer {t_alice}"})
+            check("queue retry", r.status_code == 200, r.text[:200])
+    r = cx.delete(f"{BASE}/api/zlib/queue/{qjob['id']}", headers={"Authorization": f"Bearer {t_alice}"})
+    check("queue delete", r.status_code == 200, r.text[:200])
+    jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+    check("queue delete removes", not any(j["id"] == qjob["id"] for j in jobs))
+
+    # 15b. worker resilience: a malformed job must fail alone — the worker keeps
+    # draining (regression: parse_size("1.2.3 MB") ValueError killed the queue
+    # task permanently, leaving every later job stuck).
+    pair_ids = []
+    for payload in ({"id": f"bad-{rand}", "name": "Poison Probe", "size": "1.2.3 MB"},
+                    {"id": f"ok-{rand}", "name": "Drain Probe", "size": "1 MB"}):
+        pair_ids.append(cx.post(f"{BASE}/api/zlib/queue", json=payload,
+                                headers={"Authorization": f"Bearer {t_alice}"}).json()["id"])
+    drained, got = False, []
+    for _ in range(45):
+        jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
+        by_id = {j["id"]: j for j in jobs}
+        got = [by_id.get(j) for j in pair_ids]
+        if all(j and j["error"] and (j["status"] == "failed" or j["attempts"] >= 1) for j in got):
+            drained = True
+            break
+        time.sleep(1)
+    check("worker survives malformed job, queue still drains", drained,
+          str([(j or {}).get("status") for j in got]))
+    for jid in pair_ids:
+        cx.delete(f"{BASE}/api/zlib/queue/{jid}", headers={"Authorization": f"Bearer {t_alice}"})
 
     # 15. static frontend must serve (a bad catch-all route 404s reader.html
     # — shipped once because nothing checked it) and revalidate on load

@@ -28,12 +28,28 @@ class ZlibUnavailable(Exception):
     pass
 
 
+class ZlibConfigError(ZlibUnavailable):
+    """Permanent configuration problem (CLI missing, no credentials) — retries can't help."""
+
+
 def _clean_desc(s: str) -> str:
     """z-lib descriptions are third-party HTML — reduce to plain text.
     Tags are stripped before entity decoding; the frontend renders this as
     textContent, so nothing here can execute."""
     text = re.sub(r"<[^>]+>", " ", s or "")
     return re.sub(r"\s+", " ", html.unescape(text)).strip()
+
+
+def parse_size(s: str) -> int | None:
+    """'1.8 MB' -> bytes (approximate; display strings round). None if unparseable."""
+    try:
+        m = re.match(r"([\d.]+)\s*(B|kB|MB|GB|TB)", (s or "").strip(), re.I)
+        if not m:
+            return None
+        mult = {"b": 1, "kb": 10**3, "mb": 10**6, "gb": 10**9, "tb": 10**12}[m.group(2).lower()]
+        return int(float(m.group(1)) * mult)
+    except ValueError:  # e.g. "1.2.3 MB" — malformed input must not crash the worker
+        return None
 
 
 class Zlib:
@@ -52,7 +68,7 @@ class Zlib:
 
     def _require_cli(self) -> None:
         if not shutil.which("zlib"):
-            raise ZlibUnavailable(
+            raise ZlibConfigError(
                 "zlib CLI not installed — brew install heartleo/tap/zlib, then "
                 "zlib login --eapi --email ... --password ... --domain https://z-lib.gd")
 
@@ -68,7 +84,7 @@ class Zlib:
         """Fresh login, overwriting any stale session."""
         creds = self._creds()
         if not creds:
-            raise ZlibUnavailable("Z-Library login needs ZLIB_EMAIL/ZLIB_PASSWORD")
+            raise ZlibConfigError("Z-Library login needs ZLIB_EMAIL/ZLIB_PASSWORD")
         domain = os.getenv("ZLIB_DOMAIN", "https://z-lib.gd")
         rc, out, err = await self._run(
             "login", "--eapi", "--email", creds[0], "--password", creds[1],
@@ -139,20 +155,55 @@ class Zlib:
         except (json.JSONDecodeError, ValueError) as e:
             raise ZlibUnavailable(f"Z-Library profile returned junk: {e}") from e
 
-    async def download(self, book_id: str) -> tuple[bytes, dict]:
-        """Returns (file_bytes, meta) — meta['_filename'] is the CLI's own filename."""
+    async def download(self, book_id: str,
+                       on_progress=None, expected_size: int | None = None) -> tuple[bytes, dict]:
+        """Returns (file_bytes, meta) — meta['_filename'] is the CLI's own filename.
+        The CLI emits no progress output; on_progress(done, total) polls the file
+        growing in the download dir each second (total is the approximate size
+        parsed from the search row, may be None). Auth failures re-login and
+        retry once, same contract as _run_authed."""
         await self._ensure_session()
         tmp = DATA_DIR / "tmp"
         tmp.mkdir(exist_ok=True)
         out_dir = Path(tempfile.mkdtemp(dir=tmp))
+
+        async def once() -> tuple[int, str, str]:
+            proc = await asyncio.create_subprocess_exec(
+                "zlib", "download", str(book_id), "--dir", str(out_dir),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            comm = asyncio.ensure_future(proc.communicate())
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + 600
+            while not comm.done():
+                if loop.time() > deadline:
+                    proc.kill()
+                    await proc.wait()
+                    raise ZlibUnavailable("zlib download timed out after 600s")
+                await asyncio.wait({comm}, timeout=1.0)
+                if on_progress:
+                    done = sum(f.stat().st_size for f in out_dir.iterdir() if f.is_file())
+                    on_progress(done, expected_size)
+            out, err = comm.result()
+            return (proc.returncode or 0,
+                    out.decode(errors="replace"), err.decode(errors="replace"))
+
         try:
-            rc, out, err = await self._run_authed(
-                "download", str(book_id), "--dir", str(out_dir), timeout=600)
+            rc, out, err = await once()
+            if rc != 0 and self._creds() and any(
+                    s in (err + out).lower() for s in ("session", "login", "auth", "401")):
+                await self._run("logout", timeout=30)  # best effort: drop the stale session
+                await self._login()
+                for f in out_dir.iterdir():  # drop partial files from the failed attempt
+                    if f.is_file():
+                        f.unlink()
+                rc, out, err = await once()
             files = list(out_dir.iterdir())
             if rc != 0 or not files:
                 hint = (err or out).strip()[:200]
                 raise ZlibUnavailable(f"Z-Library download failed: {hint or 'no file produced'}")
-            f = files[0]
+            f = max(files, key=lambda p: p.stat().st_mtime)  # newest = the delivered file
+            if on_progress:
+                on_progress(f.stat().st_size, f.stat().st_size)
             return f.read_bytes(), {"_filename": f.name}
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)

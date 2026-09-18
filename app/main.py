@@ -1,10 +1,14 @@
 """Bookplate API — FastAPI + SQLite/FTS5 + content-addressed store."""
+import asyncio
 import os
 import re
 import shutil
 import tempfile
+from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -13,12 +17,25 @@ from pydantic import BaseModel
 from . import db, metadata, opds
 from .auth import UserDep, hash_password, make_token, verify_password
 from .storage import book_path, cover_path, sha256_file, store_file
-from .zlib_client import ZlibUnavailable, zlib
+from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 TMP_DIR = db.DATA_DIR / "tmp"
 
-app = FastAPI(title="Ebook Manager")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    with db.conn() as con:  # resume jobs a previous process left mid-flight
+        con.execute("UPDATE download_jobs SET status='queued', next_attempt_at=NULL "
+                    "WHERE status IN ('downloading','processing')")
+    worker = asyncio.create_task(download_worker())
+    yield
+    worker.cancel()
+    with suppress(asyncio.CancelledError):
+        await worker
+
+
+app = FastAPI(title="Ebook Manager", lifespan=lifespan)
 db.init()
 TMP_DIR.mkdir(exist_ok=True)
 
@@ -48,8 +65,9 @@ def register(c: Credentials, response: Response):
 
 @app.post("/api/auth/login")
 def login(c: Credentials, response: Response):
-    row = db.conn().execute(
-        "SELECT * FROM users WHERE email=?", (c.email.strip().lower(),)).fetchone()
+    with db.conn() as con:
+        row = con.execute(
+            "SELECT * FROM users WHERE email=?", (c.email.strip().lower(),)).fetchone()
     if not row or not verify_password(c.password, row["password_hash"]):
         raise HTTPException(401, "invalid credentials")
     token = make_token(row["id"])
@@ -106,7 +124,8 @@ def list_books(q: str = "", user=UserDep):
         sql += " AND b.id IN (SELECT rowid FROM books_fts WHERE books_fts MATCH :q)"
         params["q"] = terms
     sql += " ORDER BY b.created_at DESC, b.id DESC"
-    return [dict(r) for r in db.conn().execute(sql, params)]
+    with db.conn() as con:
+        return [dict(r) for r in con.execute(sql, params)]
 
 
 @app.get("/api/books/{book_id}")
@@ -122,42 +141,67 @@ def _raise404():
     raise HTTPException(404, "not found")
 
 
+async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
+                  fallback: dict | None = None) -> tuple[dict, bool]:
+    """Shared ingest: sha dedup -> metadata (with optional z-lib fallback fields)
+    -> store -> insert -> shelf link. Returns (book, duplicate). tmp carries the
+    file extension; its bytes are moved into the store on first ingest."""
+    sha = sha256_file(tmp)
+    with db.conn() as con:
+        row = con.execute("SELECT * FROM books WHERE sha256=?", (sha,)).fetchone()
+        if row:
+            book, dup = dict(row), True
+        else:
+            dup = False
+            meta = await metadata.build_metadata(tmp, orig_name)
+            if fallback:
+                if not meta["title"] or meta["title"] == "Unknown title":
+                    meta["title"] = fallback.get("name") or meta["title"]
+                if not meta["authors"]:
+                    meta["authors"] = fallback.get("authors") or ""
+                if not meta["categories"] and fallback.get("categories"):
+                    meta["categories"] = str(fallback["categories"]).split("-")[-1].strip()
+                if not meta["description"] and fallback.get("description"):
+                    meta["description"] = str(fallback["description"])
+                if not meta["cover"] and fallback.get("cover"):
+                    img = await _fetch_bytes(fallback["cover"])
+                    if img:
+                        meta["cover"], meta["cover_ext"] = img, "jpg"
+            if not meta["cover"]:  # guaranteed thumbnail: deterministic generated cover
+                meta["cover"] = metadata.generated_cover(meta["title"], meta["authors"], sha)
+                meta["cover_ext"] = "svg"
+            size = tmp.stat().st_size
+            store_file(tmp, sha, tmp.suffix.lstrip(".").lower())
+            cur = con.execute(
+                """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
+                   categories, description, year, cover_ext, source, added_by)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sha, tmp.suffix.lstrip(".").lower(), size, meta["title"], _norm_title(meta["title"]),
+                 meta["authors"], meta["isbn"], meta["language"], meta["categories"],
+                 meta["description"], meta["year"], meta["cover_ext"], source, user_id))
+            if meta["cover"]:
+                cover_path(sha, meta["cover_ext"] or "jpg").write_bytes(meta["cover"])
+            book = dict(con.execute("SELECT * FROM books WHERE id=?", (cur.lastrowid,)).fetchone())
+        con.execute("INSERT OR IGNORE INTO user_books(user_id, book_id) VALUES(?,?)",
+                    (user_id, book["id"]))
+        return book, dup
+
+
 @app.post("/api/books")
 async def upload(file: UploadFile = File(...), user=UserDep):
     ext = Path(file.filename or "").suffix.lower().lstrip(".")
     if ext not in metadata.EXTS:
         raise HTTPException(400, f"unsupported format, allowed: {', '.join(sorted(metadata.EXTS))}")
-    tmp = Path(tempfile.mkstemp(dir=TMP_DIR, suffix=f".{ext}")[1])
+    fd, name = tempfile.mkstemp(dir=TMP_DIR, suffix=f".{ext}")
+    os.close(fd)  # mkstemp leaks an fd if the int is discarded
+    tmp = Path(name)
     try:
         with open(tmp, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        sha = sha256_file(tmp)
-        with db.conn() as con:
-            row = con.execute("SELECT * FROM books WHERE sha256=?", (sha,)).fetchone()
-            if row:
-                book, dup = dict(row), True
-            else:
-                dup = False
-                meta = await metadata.build_metadata(tmp, file.filename)
-                size = tmp.stat().st_size
-                store_file(tmp, sha, ext)
-                cur = con.execute(
-                    """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
-                       categories, description, year, cover_ext, source, added_by)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (sha, ext, size, meta["title"], _norm_title(meta["title"]), meta["authors"],
-                     meta["isbn"], meta["language"], meta["categories"],
-                     meta["description"], meta["year"], meta["cover_ext"], "upload", user["id"]))
-                book_id = cur.lastrowid
-                if meta["cover"]:
-                    cover_path(sha, meta["cover_ext"] or "jpg").write_bytes(meta["cover"])
-                row = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
-                book = dict(row)
-            con.execute("INSERT OR IGNORE INTO user_books(user_id, book_id) VALUES(?,?)",
-                        (user["id"], book["id"]))
-            # logical dup: same normalized title+author under a different file
-            similar = []
-            if not dup:
+        book, dup = await _ingest(tmp, file.filename or "", "upload", user["id"])
+        similar = []
+        if not dup:  # logical dup: same normalized title+author under a different file
+            with db.conn() as con:
                 similar = [dict(r) for r in con.execute(
                     "SELECT id, title, ext FROM books WHERE id != ? AND norm_title=? AND norm_title != ''",
                     (book["id"], _norm_title(book["title"])))]
@@ -240,10 +284,6 @@ async def zlib_search(q: str, user=UserDep):
         raise HTTPException(503, str(e))
 
 
-class ZlibDownload(BaseModel):
-    id: str
-
-
 @app.get("/api/zlib/limits")
 async def zlib_limits(user=UserDep):
     try:
@@ -252,79 +292,251 @@ async def zlib_limits(user=UserDep):
         raise HTTPException(503, str(e))
 
 
-@app.post("/api/zlib/download")
-async def zlib_download(req: ZlibDownload, user=UserDep):
+class ZlibQueueReq(BaseModel):
+    id: str
+    name: str = ""
+    authors: str = ""
+    cover: str = ""
+    extension: str = ""
+    size: str = ""
+
+
+@app.post("/api/zlib/queue")
+def zlib_enqueue(req: ZlibQueueReq, user=UserDep):
+    if not req.id:
+        raise HTTPException(400, "z-lib book id required")
+    with db.conn() as con:
+        con.execute(
+            """INSERT OR IGNORE INTO download_jobs
+               (user_id, zlib_id, title, authors, cover_url, ext, size_text)
+               VALUES(?,?,?,?,?,?,?)""",
+            (user["id"], req.id, req.name, req.authors, req.cover,
+             (req.extension or "").lower(), req.size))
+        row = con.execute("SELECT * FROM download_jobs WHERE user_id=? AND zlib_id=?",
+                          (user["id"], req.id)).fetchone()
+    return dict(row)
+
+
+@app.get("/api/zlib/queue")
+def zlib_queue(user=UserDep):
+    # limits are NOT included: the frontend fetches /api/zlib/limits once per
+    # dialog open — calling the zlib CLI on every 3s poll would spawn a process
+    # per poll.
+    with db.conn() as con:
+        jobs = [dict(r) for r in con.execute(
+            "SELECT * FROM download_jobs WHERE user_id=? ORDER BY id DESC LIMIT 200",
+            (user["id"],))]
+    return {"jobs": jobs}
+
+
+@app.delete("/api/zlib/queue/{job_id}")
+def zlib_queue_remove(job_id: int, user=UserDep):
+    with db.conn() as con:
+        # atomic: a job claimed by the worker between check and delete must not
+        # be removed mid-download (else quota is spent for a book nobody sees)
+        cur = con.execute("DELETE FROM download_jobs WHERE id=? AND user_id=? "
+                          "AND status NOT IN ('downloading','processing')", (job_id, user["id"]))
+        if cur.rowcount == 0:
+            row = con.execute("SELECT 1 FROM download_jobs WHERE id=? AND user_id=?",
+                              (job_id, user["id"])).fetchone()
+            if not row:
+                _raise404()
+            raise HTTPException(409, "download in progress")
+    return {"ok": True}
+
+
+@app.post("/api/zlib/queue/{job_id}/retry")
+def zlib_queue_retry(job_id: int, user=UserDep):
+    with db.conn() as con:
+        row = con.execute("SELECT status FROM download_jobs WHERE id=? AND user_id=?",
+                          (job_id, user["id"])).fetchone()
+        if not row:
+            _raise404()
+        if row["status"] != "failed":
+            raise HTTPException(400, "only failed jobs can be retried")
+        con.execute("UPDATE download_jobs SET status='queued', error='', attempts=0, "
+                    "bytes_done=NULL, bytes_total=NULL, next_attempt_at=NULL, updated_at=? "
+                    "WHERE id=?", (_now_str(), job_id))
+    return {"ok": True}
+
+
+MAX_COVER_BYTES = 5 * 1024 * 1024
+
+
+async def _resolve_public_ip(host: str) -> str | None:
+    """THE single DNS resolution for a cover fetch — validation and dial use the
+    same answer, so rebinding can't diverge them. Non-blocking (loop executor).
+    None unless every resolved address is global (no loopback/private/link-local)."""
+    import ipaddress
     try:
-        data, meta = await zlib.download(req.id)
-    except ZlibUnavailable as e:
-        raise HTTPException(503, str(e))
-    # write to tmp then reuse the upload ingest path
-    ext = Path(meta["_filename"]).suffix.lower().lstrip(".")
-    if ext not in metadata.EXTS:
-        ext = "pdf"
-    tmp = Path(tempfile.mkstemp(dir=TMP_DIR, suffix=f".{ext}")[1])
-    tmp.write_bytes(data)
-    try:
-        with db.conn() as con:
-            sha = sha256_file(tmp)
-            row = con.execute("SELECT * FROM books WHERE sha256=?", (sha,)).fetchone()
-        if row:
-            book, dup = dict(row), True
-        else:
-            dup = False
-            m = await metadata.build_metadata(tmp, meta["_filename"])
-            if not m["title"] or m["title"] == "Unknown title":
-                m["title"] = meta.get("name") or m["title"]
-            if not m["authors"]:
-                m["authors"] = meta.get("authors") or ""
-            if not m["categories"] and meta.get("categories"):
-                m["categories"] = str(meta["categories"]).split("-")[-1].strip()
-            if not m["description"] and meta.get("description"):
-                m["description"] = str(meta["description"])
-            if not m["cover"] and meta.get("cover"):
-                img = await _fetch_bytes(meta["cover"])
-                if img:
-                    m["cover"], m["cover_ext"] = img, "jpg"
-            store_file(tmp, sha, ext)
-            with db.conn() as con:
-                cur = con.execute(
-                    """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
-                       categories, description, year, cover_ext, source, added_by)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (sha, ext, len(data), m["title"], _norm_title(m["title"]), m["authors"], m["isbn"], m["language"],
-                     m["categories"], m["description"], m["year"], m["cover_ext"], "zlibrary",
-                     user["id"]))
-                if m["cover"]:
-                    cover_path(sha, m["cover_ext"] or "jpg").write_bytes(m["cover"])
-                row = con.execute("SELECT * FROM books WHERE id=?", (cur.lastrowid,)).fetchone()
-                book = dict(row)
-        with db.conn() as con:
-            con.execute("INSERT OR IGNORE INTO user_books(user_id, book_id) VALUES(?,?)",
-                        (user["id"], book["id"]))
-        return {"book": book, "duplicate": dup}
-    finally:
-        tmp.unlink(missing_ok=True)
+        infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+    except Exception:
+        return None
+    if not infos or not all(ipaddress.ip_address(i[4][0]).is_global for i in infos):
+        return None
+    return infos[0][4][0]
 
 
 async def _fetch_bytes(url: str) -> bytes | None:
-    import httpx
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as cx:
-            r = await cx.get(url)
-            return r.content if r.status_code == 200 else None
+        for _ in range(5):  # follow redirects manually: re-validate every hop
+            u = httpx.URL(url)
+            if u.scheme not in ("http", "https") or not u.host:
+                return None
+            ip = await _resolve_public_ip(u.host)
+            if ip is None:
+                return None
+            # dial the validated IP directly; restore Host + TLS identity.
+            # Fresh client per hop: pools key on the pinned origin, so a hop to
+            # another host on the same IP must not reuse another name's TLS.
+            pinned = u.copy_with(host=ip)
+            ext = {"sni_hostname": u.host} if u.scheme == "https" else {}
+            try:
+                async with httpx.AsyncClient(timeout=10, follow_redirects=False) as cx:
+                    async with cx.stream("GET", str(pinned),
+                                         headers={"Host": u.netloc.decode("ascii")},
+                                         extensions=ext) as r:
+                        if r.status_code in (301, 302, 303, 307, 308):
+                            loc = r.headers.get("location", "")
+                            if not loc:
+                                return None  # 3xx without Location: don't spin 5 hops
+                            url = str(u.join(loc))
+                            continue  # next hop: fresh client, re-validated pin
+                        if r.status_code != 200:
+                            return None
+                        if int(r.headers.get("content-length") or 0) > MAX_COVER_BYTES:
+                            return None
+                        buf = bytearray()  # streamed: a lying Content-Length can't balloon RAM
+                        async for chunk in r.aiter_bytes(1 << 16):
+                            buf += chunk
+                            if len(buf) > MAX_COVER_BYTES:
+                                return None
+                        return bytes(buf) or None
+            except httpx.HTTPError:
+                return None
     except Exception:
         return None
+    return None
+
+
+# ---------- download queue worker ----------
+
+# ponytail: sequential worker is deliberate — one shared z-lib account; parallel
+# downloads would burn quota and stress mirrors. Revisit only with per-account keys.
+QUOTA_RECHECK_MIN = 30  # re-poll daily_remaining this often while quota is exhausted
+MAX_ATTEMPTS = 3
+BACKOFF_MIN = (5, 30)   # retry delay after attempt 1, 2
+
+
+def _now_str(offset_min: int = 0) -> str:
+    """UTC timestamp matching sqlite datetime('now') format, for string compares."""
+    dt = datetime.now(timezone.utc) + timedelta(minutes=offset_min)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _job_update(job_id: int, **fields) -> None:
+    cols = ", ".join(f"{k}=?" for k in fields)
+    with db.conn() as con:
+        con.execute(f"UPDATE download_jobs SET {cols}, updated_at=? WHERE id=?",
+                    (*fields.values(), _now_str(), job_id))
+
+
+def _claim_next_job() -> dict | None:
+    """Atomically mark the oldest due job as downloading; None when idle.
+    Also reclaims 'downloading' rows gone stale (15 min without an updated_at
+    touch — active downloads bump it every second), so a job whose requeue
+    update was lost to a DB hiccup self-heals instead of stranding."""
+    with db.conn() as con:
+        row = con.execute(
+            """SELECT * FROM download_jobs
+               WHERE (status IN ('queued','waiting_quota')
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+                  OR (status = 'downloading' AND updated_at < ?)
+               ORDER BY id LIMIT 1""", (_now_str(), _now_str(-15))).fetchone()
+        if not row:
+            return None
+        con.execute("UPDATE download_jobs SET status='downloading', updated_at=? WHERE id=?",
+                    (_now_str(), row["id"]))
+        return dict(row)
+
+
+async def _run_job(job: dict) -> None:
+    jid = job["id"]
+    try:
+        limits = await zlib.limits()
+        if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
+            # quota exhausted: re-check when the daily window may have reset
+            _job_update(jid, status="waiting_quota", next_attempt_at=_now_str(QUOTA_RECHECK_MIN))
+            return
+    except ZlibUnavailable:
+        pass  # quota probe failed — attempt the download anyway
+    try:
+        data, meta = await zlib.download(
+            job["zlib_id"],
+            on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
+            expected_size=parse_size(job["size_text"]))
+    except ZlibConfigError as e:
+        _job_update(jid, status="failed", error=str(e)[:300], next_attempt_at=None)
+        return
+    except ZlibUnavailable as e:
+        attempts = job["attempts"] + 1
+        if attempts >= MAX_ATTEMPTS:
+            _job_update(jid, status="failed", error=str(e)[:300], attempts=attempts,
+                        bytes_done=None, bytes_total=None, next_attempt_at=None)
+        else:
+            _job_update(jid, status="queued", error=str(e)[:300], attempts=attempts,
+                        bytes_done=None, bytes_total=None,
+                        next_attempt_at=_now_str(BACKOFF_MIN[attempts - 1]))
+        return
+    _job_update(jid, status="processing", bytes_done=None, bytes_total=None)
+    ext = Path(meta["_filename"]).suffix.lower().lstrip(".") or job["ext"]
+    if ext not in metadata.EXTS:
+        ext = "pdf"
+    fd, name = tempfile.mkstemp(dir=TMP_DIR, suffix=f".{ext}")
+    os.close(fd)  # mkstemp leaks an fd if the int is discarded
+    tmp = Path(name)
+    try:
+        tmp.write_bytes(data)
+        await _ingest(tmp, meta["_filename"], "zlibrary", job["user_id"],
+                      fallback={"name": job["title"], "authors": job["authors"],
+                                "cover": job["cover_url"]})
+    finally:
+        tmp.unlink(missing_ok=True)
+    _job_update(jid, status="done", error="")
+
+
+async def download_worker():
+    while True:
+        job = None
+        try:
+            job = _claim_next_job()
+            if job:
+                try:  # a poisoned job must fail alone, never kill the queue task
+                    await _run_job(job)
+                except Exception as e:  # noqa: BLE001
+                    _job_update(job["id"], status="failed", error=str(e)[:300], next_attempt_at=None)
+            else:
+                await asyncio.sleep(5)
+        except Exception as e:  # noqa: BLE001 — DB hiccup etc: never let the queue task die
+            print(f"download_worker: {e!r}", flush=True)
+            if job:  # claim happened before the failure — put it back for a later pass
+                try:
+                    _job_update(job["id"], status="queued", next_attempt_at=_now_str(1))
+                except Exception:
+                    pass
+            await asyncio.sleep(1)
 
 
 # ---------- OPDS ----------
 
 @app.get("/opds")
 def opds_catalog(request: Request, user=UserDep):
-    rows = [dict(r) for r in db.conn().execute(
-        """SELECT b.* FROM books b WHERE b.id IN (
-             SELECT book_id FROM user_books WHERE user_id=?
-             UNION SELECT book_id FROM shares WHERE to_user=?)
-           ORDER BY b.created_at DESC""", (user["id"], user["id"]))]
+    with db.conn() as con:
+        rows = [dict(r) for r in con.execute(
+            """SELECT b.* FROM books b WHERE b.id IN (
+                 SELECT book_id FROM user_books WHERE user_id=?
+                 UNION SELECT book_id FROM shares WHERE to_user=?)
+               ORDER BY b.created_at DESC""", (user["id"], user["id"]))]
     return Response(opds.catalog(rows, str(request.url.path)),
                     media_type="application/atom+xml;profile=opds-catalog")
 

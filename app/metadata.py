@@ -1,7 +1,10 @@
 """Metadata pipeline: embedded metadata -> filename parse -> Google Books/OpenLibrary -> AI fallback."""
+import hashlib
 import os
 import re
+import textwrap
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import httpx
 from pypdf import PdfReader
@@ -58,6 +61,16 @@ def from_pdf(path: Path, meta: dict) -> None:
     if m:
         meta["title"] = (m.title or "").strip()
         meta["authors"] = (m.author or "").strip()
+    try:  # first browser-displayable image on page 1 — usually the cover
+        for img in reader.pages[0].images:
+            if img.data[:3] == b"\xff\xd8\xff":
+                meta["cover"], meta["cover_ext"] = img.data, "jpg"
+                break
+            if img.data[:8] == b"\x89PNG\r\n\x1a\n":
+                meta["cover"], meta["cover_ext"] = img.data, "png"
+                break
+    except Exception:
+        pass  # JPX/CCITT etc. don't render in <img> — let enrichment try instead
     try:
         meta["sample_text"] = "".join(
             (p.extract_text() or "") for p in reader.pages[:3]
@@ -153,6 +166,29 @@ async def enrich(meta: dict) -> None:
                     meta["cover_ext"] = cover_url.rsplit(".", 1)[-1].lower() or "jpg"
         except Exception:
             pass
+
+
+def generated_cover(title: str, authors: str, seed: str) -> bytes:
+    """Deterministic SVG placeholder cover (DESIGN.md palette) — last resort so
+    every book has a thumbnail. Stored with cover_ext='svg'."""
+    h = int(hashlib.sha256((seed or title or "?").encode()).hexdigest(), 16)
+    bg = ("#7C2D2D", "#35513D", "#26221C", "#8A6A2F", "#9C4A2F", "#5A5A44")[h % 6]
+    ink = "#F6F3EC"
+    lines = textwrap.wrap(title or "Untitled", width=18, max_lines=5, placeholder="…")
+    parts = []
+    y = 300 - (len(lines) - 1) * 28
+    for ln in lines:
+        parts.append(f'<text x="48" y="{y}" font-size="46" font-weight="600" '
+                     f'fill="{ink}">{escape(ln)}</text>')
+        y += 56
+    for i, ln in enumerate(textwrap.wrap(authors or "", width=32, max_lines=2, placeholder="…")):
+        parts.append(f'<text x="48" y="{624 + i * 28}" font-size="22" fill="{ink}" '
+                     f'fill-opacity="0.85">{escape(ln)}</text>')
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="480" height="720" viewBox="0 0 480 720">'
+           f'<rect width="480" height="720" fill="{bg}"/>'
+           f'<rect x="28" y="28" width="424" height="664" fill="none" stroke="{ink}" stroke-opacity="0.4"/>'
+           f'<g font-family="Georgia, serif">{"".join(parts)}</g></svg>')
+    return svg.encode()
 
 
 async def build_metadata(path: Path, orig_name: str) -> dict:

@@ -37,6 +37,25 @@ CREATE TABLE IF NOT EXISTS user_books(
   added_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, book_id)
 );
+CREATE TABLE IF NOT EXISTS download_jobs(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  zlib_id TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  authors TEXT NOT NULL DEFAULT '',
+  cover_url TEXT NOT NULL DEFAULT '',
+  ext TEXT NOT NULL DEFAULT '',
+  size_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  error TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  bytes_done INTEGER,
+  bytes_total INTEGER,
+  next_attempt_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(user_id, zlib_id)
+);
 CREATE TABLE IF NOT EXISTS shares(
   id INTEGER PRIMARY KEY,
   book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
@@ -65,9 +84,25 @@ END;
 """
 
 
+class _Conn(sqlite3.Connection):
+    """with-block commits/rolls back AND closes. Without close(), connections
+    linger as open db+wal fd pairs — sqlite3 defers cross-thread dealloc, so
+    the threadpool's refcount-frees never released them deterministically."""
+
+    def __exit__(self, et, ev, tb):
+        try:
+            if et is None:
+                self.commit()
+            else:
+                self.rollback()
+        finally:
+            self.close()
+        return False
+
+
 def conn() -> sqlite3.Connection:
     DATA_DIR.mkdir(exist_ok=True)
-    c = sqlite3.connect(DB_PATH, timeout=10)
+    c = sqlite3.connect(DB_PATH, timeout=10, factory=_Conn)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA foreign_keys=ON")
     c.execute("PRAGMA journal_mode=WAL")

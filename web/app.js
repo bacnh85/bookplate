@@ -15,6 +15,52 @@ async function api(path, opts = {}) {
 
 function logout() { localStorage.removeItem("token"); location.reload(); }
 
+/* ---------- xhr helper (fetch can't report upload/download progress) ---------- */
+function xhr(method, path, { body, responseType, onProgress, uploadProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open(method, path);
+    if (token()) x.setRequestHeader("Authorization", `Bearer ${token()}`);
+    if (responseType) x.responseType = responseType;
+    if (onProgress) x.onprogress = (e) => onProgress(e.loaded, e.total);
+    if (uploadProgress) x.upload.onprogress = (e) => uploadProgress(e.loaded, e.total);
+    x.onload = () => {
+      if (x.status === 401 && !path.startsWith("/api/auth")) { logout(); return reject(new Error("signed out")); }
+      if (x.status >= 200 && x.status < 300) {
+        if (x.responseType === "blob") return resolve(x.response);
+        let data = {};
+        try { data = JSON.parse(x.responseText); } catch { /* empty body */ }
+        return resolve(data);
+      }
+      let detail = x.statusText;
+      try { detail = JSON.parse(x.responseText).detail || detail; } catch { /* not JSON */ }
+      reject(new Error(detail));
+    };
+    x.onerror = () => reject(new Error("network error"));
+    x.send(body);
+  });
+}
+
+const fmtBytes = (n) => n == null ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB`
+  : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
+
+/* ---------- transfer stack (upload progress) ---------- */
+function transferCard(name) {
+  const el = document.createElement("div");
+  el.className = "transfer";
+  el.innerHTML = `<div class="transfer-name">${esc(name)}</div>
+    <div class="bar"><div class="bar-fill" style="width:0%"></div></div>
+    <div class="transfer-state"></div>`;
+  $("#transfers").append(el);
+  const fill = el.querySelector(".bar-fill"), state = el.querySelector(".transfer-state"), bar = el.querySelector(".bar");
+  return {
+    percent(p) { bar.classList.remove("indeterminate"); fill.style.width = `${p}%`; state.textContent = `${p}%`; },
+    indeterminate(text) { bar.classList.add("indeterminate"); state.textContent = text; },
+    done(text) { this.percent(100); state.textContent = text; setTimeout(() => el.remove(), 4000); },
+    fail(text) { el.classList.add("failed"); bar.classList.remove("indeterminate"); fill.style.width = "100%"; state.textContent = text; },
+  };
+}
+
 /* ---------- auth ---------- */
 let registerMode = false;
 $("#auth-toggle").onclick = () => {
@@ -72,8 +118,7 @@ async function loadShelf(q = "") {
       </div>`;
     card.querySelector(".cover").onclick = () => openReader(b.id);
     card.querySelector('[data-act="read"]').onclick = () => openReader(b.id);
-    card.querySelector('[data-act="download"]').onclick = () =>
-      location.assign(`/api/books/${b.id}/file?dl=1`);
+    card.querySelector('[data-act="download"]').onclick = (e) => downloadBook(e.currentTarget, b);
     const share = card.querySelector('[data-act="share"]');
     if (share) share.onclick = () => shareBook(b);
     const del = card.querySelector('[data-act="delete"]');
@@ -93,19 +138,47 @@ $("#search").oninput = (e) => {
   searchTimer = setTimeout(() => loadShelf(e.target.value), 250);
 };
 
+/* ---------- shelf download (streamed with progress) ---------- */
+async function downloadBook(btn, b) {
+  if (btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  try {
+    const blob = await xhr("GET", `/api/books/${b.id}/file?dl=1`, { responseType: "blob",
+      onProgress: (done, total) => {
+        btn.textContent = total ? `${Math.round((done / total) * 100)}%` : "…";
+      } });
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    a.href = url;
+    a.download = `${b.title || "book"}.${b.ext}`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (err) {
+    alert(`Download failed: ${err.message}`);
+  }
+  btn.disabled = false;
+  btn.textContent = orig;
+}
+
 /* ---------- upload ---------- */
 $("#upload-btn").onclick = () => $("#file-input").click();
 $("#file-input").onchange = async (e) => {
   const files = [...e.target.files];
-  for (const f of files) {
+  await Promise.all(files.map(async (f) => {
+    const card = transferCard(f.name);
     try {
-      const res = await api("/api/books", { method: "POST", body: (() => {
-        const fd = new FormData(); fd.append("file", f); return fd;
-      })() });
-      if (res.duplicate) alert(`"${res.book.title}" was already on your shelf — added anyway, no copy stored.`);
-      else if (res.similar.length) alert(`Note: "${res.similar[0].title}" (${res.similar[0].ext}) may be the same book in another format.`);
-    } catch (err) { alert(`Upload failed: ${err.message}`); }
-  }
+      const fd = new FormData(); fd.append("file", f);
+      const res = await xhr("POST", "/api/books", { body: fd, uploadProgress: (done, total) => {
+        const p = total ? Math.round((done / total) * 100) : 0;
+        if (p >= 100) card.indeterminate("Processing…");  // server-side metadata enrichment
+        else card.percent(p);
+      } });
+      if (res.duplicate) card.done("Already on shelf ✓");
+      else if (res.similar.length) card.done(`Added — note: "${res.similar[0].title}" may be the same book`);
+      else card.done("Added ✓");
+    } catch (err) { card.fail(err.message); }
+  }));
   e.target.value = "";
   loadShelf();
 };
@@ -195,6 +268,20 @@ function resultRow(r, rank) {
   const open = () => openDetail(r);
   row.onclick = open;
   row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } };
+  const later = document.createElement("button");
+  later.className = "btn-ghost queue-add";
+  later.type = "button";
+  later.textContent = "Get later";
+  later.title = "Add to download queue";
+  later.onclick = async (e) => {
+    e.stopPropagation();
+    try {
+      await enqueue(r);
+      later.textContent = "Queued ✓";
+      later.disabled = true;
+    } catch (err) { $("#zlib-error").textContent = err.message; }
+  };
+  row.querySelector(".result-meta").append(later);
   return row;
 }
 
@@ -213,7 +300,7 @@ function openDetail(r) {
   $("#detail-title").textContent = r.name;
   $("#detail-authors").textContent = r.authors || "—";
   const dl = $("#detail-download");
-  dl.disabled = false; dl.textContent = "Download";
+  dl.disabled = false; dl.textContent = "Get later";
   const link = $("#detail-zlib");
   link.hidden = true;  // third-party data: only http(s) becomes clickable
   if (r.url && /^https?:\/\//i.test(r.url)) { link.href = r.url; link.hidden = false; }
@@ -236,6 +323,7 @@ function openDetail(r) {
   if (!dlg.open) dlg.showModal();
   dlg.scrollTop = 0;
   loadRelated(r);
+  refreshQueue();  // mirror any existing queue state for this book onto the button
   api("/api/zlib/limits").then((l) => {
     $("#detail-quota").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
   }).catch(() => { /* unconfigured — surfaced on download */ });
@@ -244,15 +332,11 @@ function openDetail(r) {
 $("#detail-download").onclick = async () => {
   if (!detailBook) return;
   const btn = $("#detail-download");
-  btn.disabled = true; btn.textContent = "Fetching…";
+  btn.disabled = true;
   $("#detail-error").textContent = "";
-  try {
-    await api("/api/zlib/download", { method: "POST", json: { id: detailBook.id } });
-    btn.textContent = "On shelf ✓";
-  } catch (err) {
-    btn.disabled = false; btn.textContent = "Download";
-    $("#detail-error").textContent = err.message;
-  }
+  try { await enqueue(detailBook); }
+  catch (err) { $("#detail-error").textContent = err.message; }
+  btn.disabled = false;
 };
 $("#detail-close").onclick = () => $("#detail-dialog").close();
 $("#detail-dialog").addEventListener("click", (e) => {
@@ -288,6 +372,113 @@ async function loadRelated(r) {
   } catch { section.hidden = true; }
 }
 
+/* ---------- download queue (z-lib) ---------- */
+const QUEUE_TERMINAL = ["done", "failed", "canceled"];
+let queueTimer = null;
+
+async function enqueue(r) {
+  const j = await api("/api/zlib/queue", { method: "POST", json: {
+    id: r.id, name: r.name, authors: r.authors, cover: r.cover,
+    extension: r.extension, size: r.size } });
+  if (j.status === "failed") await api(`/api/zlib/queue/${j.id}/retry`, { method: "POST" });
+  refreshQueue();
+  return j;
+}
+
+async function refreshQueue() {
+  let jobs = [];
+  try { ({ jobs } = await api("/api/zlib/queue")); } catch { /* signed out etc. */ }
+  renderQueue(jobs);
+  mirrorDetail(jobs);
+  const need = jobs.some((j) => !QUEUE_TERMINAL.includes(j.status)) || $("#downloads-dialog").open;
+  if (need && !queueTimer) queueTimer = setInterval(refreshQueue, 3000);
+  if (!need && queueTimer) { clearInterval(queueTimer); queueTimer = null; }
+}
+
+function barWidth(j) {
+  if (j.status === "done" || j.status === "processing") return 100;
+  if (j.status === "downloading") return j.bytes_total ? Math.round((j.bytes_done / j.bytes_total) * 100) : 100;
+  return 0;
+}
+
+function jobStatusLine(j) {
+  const bytes = j.bytes_done != null ? ` · ${fmtBytes(j.bytes_done)}${j.bytes_total ? ` / ${fmtBytes(j.bytes_total)}` : ""}` : "";
+  switch (j.status) {
+    case "queued": return `Queued${j.error ? ` · last error: ${j.error}` : ""}`;
+    case "waiting_quota": return "Waiting for daily quota — retries automatically";
+    case "downloading": return `Downloading${j.bytes_total ? ` ${Math.round((j.bytes_done / j.bytes_total) * 100)}%` : ""}${bytes}`;
+    case "processing": return "Processing…";
+    case "done": return "On shelf ✓";
+    case "failed": return j.error || "Failed";
+    default: return j.status;
+  }
+}
+
+function renderQueue(jobs) {
+  const list = $("#downloads-list");
+  list.innerHTML = "";
+  $("#downloads-empty").hidden = jobs.length > 0;
+  for (const j of jobs) {
+    const el = document.createElement("div");
+    el.className = "queue-row";
+    const initial = esc(((j.title || "?").trim()[0] || "?").toUpperCase());
+    el.innerHTML = `
+      ${j.cover_url
+        ? `<img class="queue-cover" loading="lazy" src="${esc(j.cover_url)}" alt="" onerror="this.remove()">`
+        : `<div class="queue-cover generated" aria-hidden="true">${initial}</div>`}
+      <div class="queue-main">
+        <div class="queue-title">${esc(j.title || j.zlib_id)}</div>
+        ${j.authors ? `<div class="result-sub">${esc(j.authors)}</div>` : ""}
+        <div class="bar ${j.status === "downloading" && !j.bytes_total ? "indeterminate" : ""}${j.status === "processing" ? " indeterminate" : ""}"><div class="bar-fill" style="width:${barWidth(j)}%"></div></div>
+        <div class="queue-state ${j.status === "failed" ? "failed" : ""}">${esc(jobStatusLine(j))}</div>
+      </div>
+      <div class="queue-actions"></div>`;
+    const actions = el.querySelector(".queue-actions");
+    if (j.status === "failed") {
+      const retry = document.createElement("button");
+      retry.className = "btn-ghost"; retry.type = "button"; retry.textContent = "Retry";
+      retry.onclick = async () => { await api(`/api/zlib/queue/${j.id}/retry`, { method: "POST" }); refreshQueue(); };
+      actions.append(retry);
+    }
+    if (!["downloading", "processing"].includes(j.status)) {
+      const rm = document.createElement("button");
+      rm.className = "btn-danger"; rm.type = "button"; rm.textContent = "✕";
+      rm.setAttribute("aria-label", "Remove from queue");
+      rm.onclick = async () => { await api(`/api/zlib/queue/${j.id}`, { method: "DELETE" }); refreshQueue(); };
+      actions.append(rm);
+    }
+    list.append(el);
+  }
+  const n = jobs.filter((j) => !QUEUE_TERMINAL.includes(j.status)).length;
+  $("#downloads-badge").hidden = !n;
+  $("#downloads-badge").textContent = n;
+}
+
+function mirrorDetail(jobs) {
+  if (!detailBook || !$("#detail-dialog").open) return;
+  const btn = $("#detail-download");
+  const j = jobs.find((x) => x.zlib_id === String(detailBook.id));
+  if (!j) { btn.textContent = "Get later"; btn.disabled = false; return; }
+  btn.textContent = {
+    queued: "Queued", waiting_quota: "Waiting for quota", downloading: "Downloading…",
+    processing: "Processing…", done: "On shelf ✓", failed: "Failed — click to retry",
+  }[j.status] || "Get later";
+  btn.disabled = !["failed", "canceled"].includes(j.status);  // failed/canceled: click re-enqueues (retry)
+}
+
+$("#downloads-btn").onclick = () => {
+  $("#downloads-dialog").showModal();
+  refreshQueue();
+  api("/api/zlib/limits").then((l) => {
+    $("#downloads-quota").textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads remaining`;
+  }).catch(() => { $("#downloads-quota").textContent = ""; });
+};
+$("#downloads-close").onclick = () => $("#downloads-dialog").close();
+$("#downloads-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();  // backdrop click
+});
+$("#downloads-dialog").addEventListener("close", () => refreshQueue());  // re-evaluate polling
+
 /* ---------- reader ---------- */
 function openReader(id) { location.assign(`/reader.html?id=${id}`); }
 
@@ -304,6 +495,7 @@ async function boot() {
     const me = await api("/api/me");
     $("#user-email").textContent = me.email;
     loadShelf();
+    refreshQueue();  // badge + resume polling if jobs are active
   } catch { /* 401 handled in api() */ }
 }
 $("#logout-btn").onclick = logout;

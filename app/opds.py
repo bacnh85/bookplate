@@ -6,6 +6,9 @@ MIME = {
     "mobi": "application/x-mobipocket-ebook", "azw3": "application/x-mobipocket-ebook",
     "fb2": "application/fb2+xml", "cbz": "application/vnd.comicbook+zip",
 }
+COVER_MIME = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "svg": "image/svg+xml",
+}
 
 
 def catalog(books, self_url: str) -> str:
@@ -23,7 +26,7 @@ def catalog(books, self_url: str) -> str:
     {authors}
     <updated>{(b['created_at'] or '').replace(' ', 'T')}Z</updated>
     <summary type="text">{escape((b['description'] or b['categories'])[:500])}</summary>
-    <link rel="http://opds-spec.org/image" href="/api/books/{b['id']}/cover" type="image/jpeg"/>
+    <link rel="http://opds-spec.org/image" href="/api/books/{b['id']}/cover" type="{COVER_MIME.get(b['cover_ext'] or '', 'image/jpeg')}"/>
     <link rel="http://opds-spec.org/acquisition" href="/api/books/{b['id']}/file" type="{mime}"/>
   </entry>""")
     return f"""<?xml version="1.0" encoding="UTF-8"?>
