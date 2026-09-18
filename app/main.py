@@ -347,6 +347,7 @@ def zlib_queue_remove(job_id: int, user=UserDep):
 
 
 @app.post("/api/zlib/queue/{job_id}/retry")
+@app.post("/api/annas/queue/{job_id}/retry")  # retry is source-agnostic; alias for symmetry
 def zlib_queue_retry(job_id: int, user=UserDep):
     with db.conn() as con:
         row = con.execute("SELECT status FROM download_jobs WHERE id=? AND user_id=?",
