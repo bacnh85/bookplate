@@ -9,13 +9,22 @@ from pathlib import Path
 import jwt
 from fastapi import Depends, HTTPException, Request
 
-from .db import conn
+from .db import DATA_DIR, conn
 
 _ITERATIONS = 200_000
-_SECRET_FILE = Path(__file__).resolve().parent.parent / "data" / ".secret"
+# legacy location (repo-root data/) — migrated to DATA_DIR on first use so
+# BOOKPLATE_DATA_DIR deployments keep their secret on the managed volume
+_LEGACY_SECRET = Path(__file__).resolve().parent.parent / "data" / ".secret"
+_SECRET_FILE = DATA_DIR / ".secret"
 
 
 def _secret() -> str:
+    if not _SECRET_FILE.exists() and _SECRET_FILE != _LEGACY_SECRET \
+            and _LEGACY_SECRET.exists():
+        _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(_SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(_LEGACY_SECRET.read_text().strip())
     if _SECRET_FILE.exists():
         os.chmod(_SECRET_FILE, 0o600)  # heal perms of files created by older versions
         return _SECRET_FILE.read_text().strip()
@@ -51,6 +60,14 @@ def make_token(user_id: int) -> str:
     )
 
 
+def _reject_inactive(row) -> None:
+    """Pending/disabled accounts are locked out everywhere (JWT, cookie, OPDS Basic)."""
+    if row["status"] == "pending":
+        raise HTTPException(403, "account awaiting admin approval")
+    if row["status"] == "disabled":
+        raise HTTPException(403, "account disabled")
+
+
 def _user_from_basic(request: Request):
     header = request.headers.get("Authorization", "")
     if not header.startswith("Basic "):
@@ -60,7 +77,10 @@ def _user_from_basic(request: Request):
     except Exception:
         return None
     row = conn().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-    return row if row and verify_password(pw, row["password_hash"]) else None
+    if row and verify_password(pw, row["password_hash"]):
+        _reject_inactive(row)
+        return row
+    return None
 
 
 def current_user(request: Request):
@@ -80,6 +100,7 @@ def current_user(request: Request):
         row = conn().execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
         if not row:
             raise HTTPException(401, "user not found")
+        _reject_inactive(row)
         return row
     user = _user_from_basic(request)
     if user:
@@ -88,3 +109,12 @@ def current_user(request: Request):
 
 
 UserDep = Depends(current_user)
+
+
+def admin_required(user=Depends(current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "admin only")
+    return user
+
+
+AdminDep = Depends(admin_required)

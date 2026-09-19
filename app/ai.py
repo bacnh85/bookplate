@@ -1,20 +1,29 @@
 """AI metadata fallback via any OpenAI-compatible endpoint (default Z.AI GLM)."""
 import json
-import os
 import re
 
 import httpx
 
+from . import settings
+
+
+def ai_enabled() -> bool:
+    """Gate before ai_extract: explicit off switch wins, then key presence."""
+    return settings.get("ai.enabled", "") != "0" and bool(settings.get("ai.api_key"))
+
 
 async def ai_extract(filename: str, sample_text: str) -> dict | None:
-    """Returns {title, author, category} or None. Needs ZAI_API_KEY; provider configurable."""
-    key = os.getenv("ZAI_API_KEY")
+    """Returns {title, author, category} or None. Needs an API key (admin Settings
+    or env); ai.enabled='0' is an explicit off switch."""
+    if settings.get("ai.enabled", "") == "0":
+        return None
+    key = settings.get("ai.api_key")
     if not key:
         return None
-    base = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/openai/v1").rstrip("/")
+    base = settings.get("ai.base_url", "https://api.z.ai/api/openai/v1").rstrip("/")
     # default per user choice 2026-09-17; not yet validated against a real key —
-    # if the model isn't on the account, responses come back as router 404s; set ZAI_MODEL
-    model = os.getenv("ZAI_MODEL", "glm-5.3-flash")
+    # if the model isn't on the account, responses come back as router 404s; set ai.model
+    model = settings.get("ai.model", "glm-5.3-flash")
     text = (sample_text or "")[:2500]
     try:
         async with httpx.AsyncClient(timeout=25) as cx:

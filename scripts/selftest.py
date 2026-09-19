@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """End-to-end self-test against a running server (default localhost:8480).
 
-Generates a test corpus with ebooklib/pypdf, then verifies: auth, ingest,
-metadata extraction chain, exact dedup, logical dup, sharing, FTS search,
-covers, download, delete, OPDS, z-lib gating.
+Generates a test corpus with ebooklib/pypdf, then verifies: auth (+ approval flow),
+ingest, metadata extraction chain, exact dedup, logical dup, sharing, FTS search,
+covers, download, delete, OPDS, z-lib gating, admin RBAC + settings + z-lib admin.
 
 Usage: .venv/bin/python scripts/selftest.py [base_url]
+
+On a populated server (registrations pend), set SELFTEST_ADMIN_EMAIL and
+SELFTEST_ADMIN_PASS so the suite can approve its test users; on a fresh DB (CI)
+the first registered user becomes admin automatically and no creds are needed.
 """
 import io
 import os
@@ -25,6 +29,9 @@ BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8480"
 rand = "".join(random.choices(string.hexdigits.lower(), k=6))
 ALICE, BOB = f"alice-{rand}@t.io", f"bob-{rand}@t.io"
 PASS = "hunter22"
+# live-server mode: creds of an existing admin (registrations pend on a populated DB)
+ADMIN_EMAIL = os.getenv("SELFTEST_ADMIN_EMAIL", "")
+ADMIN_PASS = os.getenv("SELFTEST_ADMIN_PASS", "")
 
 ok = total = 0
 def check(name, cond, detail=""):
@@ -84,11 +91,52 @@ def upload(cx, token, name, data):
                    headers={"Authorization": f"Bearer {token}"}).json()
 
 
+def _uid_by_email(cx, headers, email):
+    users = cx.get(f"{BASE}/api/admin/users", headers=headers).json()
+    return next(u["id"] for u in users if u["email"] == email)
+
+
 def main():
-    cx = httpx.Client(timeout=30)
-    t_alice = cx.post(f"{BASE}/api/auth/register", json={"email": ALICE, "password": PASS}).json()["token"]
-    t_bob = cx.post(f"{BASE}/api/auth/register", json={"email": BOB, "password": PASS}).json()["token"]
+    cx = httpx.Client(timeout=30, base_url=BASE)
+    # 2. auth — register + approval flow.
+    # Fresh DB (CI): the FIRST user becomes admin; the second lands pending and the
+    # first approves them. Live server with existing users: registrations pend, so
+    # the runner must provide SELFTEST_ADMIN_EMAIL/SELFTEST_ADMIN_PASS to create
+    # the test users as active.
+    ralice = cx.post("/api/auth/register", json={"email": ALICE, "password": PASS}).json()
+    t_admin = ""
+    alice_is_admin = "token" in ralice
+    if alice_is_admin:
+        t_alice = ralice["token"]
+    else:
+        check("register alice pending on live server", ralice.get("status") == "pending", str(ralice)[:120])
+        la = cx.post(f"{BASE}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS})
+        check("admin login (SELFTEST_ADMIN_* env)", la.status_code == 200, la.text[:120])
+        t_admin = la.json().get("token", "")
+        if not t_admin:
+            print("\nLive-server mode needs an existing admin: set SELFTEST_ADMIN_EMAIL "
+                  "and SELFTEST_ADMIN_PASS (registrations pend on a populated DB).")
+            return 1
+        ah = {"Authorization": f"Bearer {t_admin}"}
+        r = cx.post(f"{BASE}/api/admin/users/{_uid_by_email(cx, ah, ALICE)}/approve", headers=ah)
+        check("admin approves alice", r.status_code == 200, r.text[:120])
+        t_alice = cx.post(f"{BASE}/api/auth/login", json={"email": ALICE, "password": PASS}).json()["token"]
+    auth_a = {"Authorization": f"Bearer {t_alice}"}
+
+    rbob = cx.post(f"{BASE}/api/auth/register", json={"email": BOB, "password": PASS}).json()
+    if "token" in rbob:
+        t_bob = rbob["token"]
+    else:
+        check("register bob pending", rbob.get("status") == "pending", str(rbob)[:120])
+        approver_token, approver_h = (t_admin, ah) if t_admin else (t_alice, auth_a)
+        r = cx.post(f"{BASE}/api/admin/users/{_uid_by_email(cx, approver_h, BOB)}/approve",
+                    headers=approver_h)
+        check("admin approves bob", r.status_code == 200, r.text[:120])
+        t_bob = cx.post(f"{BASE}/api/auth/login", json={"email": BOB, "password": PASS}).json()["token"]
+    auth_b = {"Authorization": f"Bearer {t_bob}"}
     check("register two users", t_alice and t_bob)
+    t_super = t_admin if t_admin else (t_alice if alice_is_admin else "")
+    auth_super = {"Authorization": f"Bearer {t_super}"}
 
     # 1. good epub: embedded metadata wins
     r = upload(cx, t_alice, "whatever.epub", make_good_epub())
@@ -269,7 +317,39 @@ def main():
     r = cx.delete(f"{BASE}/api/zlib/queue/{ajob['id']}", headers={"Authorization": f"Bearer {t_alice}"})
     check("annas delete", r.status_code == 200, r.text[:200])
 
-    # 15. static frontend must serve (a bad catch-all route 404s reader.html
+    # 15. admin: RBAC, settings API, z-lib admin endpoints
+    r = cx.get("/api/admin/users", headers=auth_b)
+    check("non-admin blocked from admin API", r.status_code == 403, str(r.status_code))
+    if t_super:
+        r = cx.get("/api/admin/users", headers=auth_super)
+        check("admin lists users", r.status_code == 200 and isinstance(r.json(), list), r.text[:120])
+        r = cx.get("/api/admin/settings", headers=auth_super)
+        masked = r.json() if r.status_code == 200 else {}
+        check("settings GET masks secrets", r.status_code == 200
+              and set(masked.get("zlib.password", {})) == {"set", "hint"}, r.text[:160])
+        r = cx.put("/api/admin/settings", headers=auth_super,
+                   json={"values": {"ai.model": "glm-5.3-flash", "registration": "closed"}})
+        check("settings PUT writes", r.status_code == 200, r.text[:120])
+        r = cx.post("/api/auth/register", json={"email": f"closed-{rand}@t.io", "password": PASS})
+        check("closed registration rejects", r.status_code == 403, str(r.status_code))
+        r = cx.put("/api/admin/settings", headers=auth_super,
+                   json={"values": {"registration": "approval"}})
+        check("settings PUT restores approval", r.status_code == 200, r.text[:120])
+        r = cx.put("/api/admin/settings", headers=auth_super,
+                   json={"values": {"not.a.key": "x"}})
+        check("settings PUT rejects unknown key", r.status_code == 400, str(r.status_code))
+        for path, label in [("/api/admin/zlib/limits", "zlib admin limits"),
+                            ("/api/admin/zlib/history", "zlib admin history"),
+                            ("/api/admin/zlib/library", "zlib admin library"),
+                            ("/api/admin/zlib/booklists", "zlib admin booklists")]:
+            r = cx.get(path, headers=auth_super)
+            # 200 = backend answered (library/booklists carry 'available');
+            # 503 = CLI/session unavailable (CI) — never a 5xx crash or 404 route
+            check(label, r.status_code in (200, 503), str(r.status_code))
+        r = cx.get("/api/admin/zlib/history", headers=auth_b)
+        check("non-admin blocked from zlib admin", r.status_code == 403, str(r.status_code))
+
+    # 16. static frontend must serve (a bad catch-all route 404s reader.html
     # — shipped once because nothing checked it) and revalidate on load
     for path, label in [("/", "index served"), ("/reader.html", "reader page served"),
                         ("/app.js", "app.js served"), ("/app.css", "app.css served"),

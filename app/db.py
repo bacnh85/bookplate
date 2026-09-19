@@ -1,8 +1,9 @@
 """SQLite (WAL) + FTS5 external-content index."""
+import os
 import sqlite3
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(os.getenv("BOOKPLATE_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
 DB_PATH = DATA_DIR / "ebook.db"
 
 SCHEMA = """
@@ -10,7 +11,14 @@ CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  status TEXT NOT NULL DEFAULT 'active',
   created_at TEXT DEFAULT (datetime('now'))
+);
+-- app-managed settings (DB value wins over env fallback; see app/settings.py)
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
 );
 -- books = unique content-addressed files
 CREATE TABLE IF NOT EXISTS books(
@@ -117,3 +125,23 @@ def init() -> None:
         cols = {r["name"] for r in c.execute("PRAGMA table_info(download_jobs)")}
         if "source" not in cols:
             c.execute("ALTER TABLE download_jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'zlibrary'")
+        ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        if "role" not in ucols:
+            c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        if "status" not in ucols:
+            c.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        # at-least-one-admin invariant: an upgraded DB (everyone role='user') with
+        # registration defaulting to 'approval' would deadlock — nobody could approve
+        # or reach /api/admin/*. Promote the earliest ACTIVE account, then ADMIN_EMAIL
+        # override. (Debris accounts left disabled can never be promoted.)
+        if not c.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+            if c.execute("SELECT 1 FROM users WHERE status='active'").fetchone():
+                c.execute("UPDATE users SET role='admin' "
+                          "WHERE id=(SELECT MIN(id) FROM users WHERE status='active')")
+        admin_email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+        if admin_email:
+            # active accounts only: a disabled ADMIN_EMAIL must never be revived,
+            # and a deliberately demoted account stays demoted (the earliest-active
+            # promotion above already ran if no admin exists)
+            c.execute("UPDATE users SET role='admin' WHERE email=? AND status='active'",
+                      (admin_email,))

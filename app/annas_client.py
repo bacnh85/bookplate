@@ -7,9 +7,10 @@ Verified against live mirrors 2026-09:
 - Official download API: /dyn/api/fast_download.json?md5=&key= -> 200/204 with
   `download_url` (documentation is served by the endpoint itself). The URL
   redirects to partner servers — fetched via app/webfetch.py (pinned, re-validated hops).
-- Mirrors rotate; ANNAS_BASE_URL overrides the default https://annas-archive.gd.
+- Mirrors rotate; the base URL is admin-Settings- or ANNAS_BASE_URL-overridable (default https://annas-archive.gd).
 
-The secret key lives only in env; the session cookie is cached in RAM only and
+The secret key lives in admin Settings (DB) or the env fallback; the session cookie is
+cached in RAM only and
 never logged or persisted. Search HTML parsing is per-card isolated so one
 malformed result can't poison the rest; md5s are validated 32-hex (untrusted input).
 """
@@ -23,6 +24,7 @@ from urllib.parse import quote_plus, unquote, urljoin, urlsplit
 
 import httpx
 
+from . import settings
 from .webfetch import _fetch_bytes
 
 # ponytail: book bytes buffered in RAM like the z-lib CLI path; stream to disk
@@ -180,16 +182,16 @@ class Annas:
 
     @property
     def enabled(self) -> bool:
-        return bool(os.getenv("ANNAS_ARCHIVE_SECRET_KEY", "").strip())
+        return bool(settings.get("annas.secret_key", "").strip())
 
     def _base(self) -> str:
-        return os.getenv("ANNAS_BASE_URL", "https://annas-archive.gd").rstrip("/")
+        return settings.get("annas.base_url", "https://annas-archive.gd").rstrip("/")
 
     def _key(self) -> str:
-        key = os.getenv("ANNAS_ARCHIVE_SECRET_KEY", "").strip()
+        key = settings.get("annas.secret_key", "").strip()
         if not key:
             raise AnnasConfigError(
-                "Anna's Archive needs ANNAS_ARCHIVE_SECRET_KEY (from your AA account page)")
+                "Anna's Archive needs a secret key (admin Settings, from your AA account page)")
         return key
 
     async def _login(self) -> None:

@@ -268,3 +268,35 @@ div.queue-cover.generated {
 .dropzone-sub { font-size: var(--fs-sm); color: var(--ink-soft); }
 
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* ---------- admin dialog ---------- */
+#admin-view { max-width: 720px; margin: 0 auto; }
+#admin-view h3 {
+  font-family: var(--font-display); font-size: var(--fs-lg); font-weight: 600;
+  margin: 18px 0 4px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.admin-tabs { display: flex; gap: 0; margin: 8px 0 4px; }
+.admin-tabs .btn-ghost { border-radius: 0; }
+.admin-tabs .btn-ghost:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.admin-tabs .btn-ghost:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.admin-table { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.admin-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.admin-row:last-child { border-bottom: none; }
+.admin-row:first-child { border-top: 1px solid var(--line); }
+.au-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.au-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.au-actions .btn-ghost, .au-actions .btn-primary { font-size: var(--fs-sm); padding: 4px 8px; }
+.badge-warn { border-color: var(--ink-soft); color: var(--ink-soft); }
+.badge-danger { border-color: var(--danger); color: var(--danger); }
+.admin-pager { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+#admin-settings-form { display: flex; flex-direction: column; gap: 8px; }
+.secret-row { display: flex; gap: 8px; align-items: center; }
+.secret-row input { flex: 1; }
+.secret-row .link { border: none; padding: 2px 4px; font-size: var(--fs-sm); }
+.check-row { display: flex; gap: 6px; align-items: center; }
+#admin-user-form { flex-direction: row; align-items: center; gap: 8px; border-bottom: none; }
+#admin-user-form input[type="email"] { flex: 1; }
+#admin-user-form input, #admin-user-form select { width: auto; }

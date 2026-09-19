@@ -71,14 +71,20 @@ $("#auth-toggle").onclick = () => {
 $("#auth-form").onsubmit = async (e) => {
   e.preventDefault();
   $("#auth-error").textContent = "";
+  $("#auth-ok").hidden = true;
   $("#auth-submit").disabled = true;
   try {
     const fn = registerMode ? "/api/auth/register" : "/api/auth/login";
-    const { token: t } = await api(fn, {
+    const res = await api(fn, {
       method: "POST",
       json: { email: $("#auth-email").value, password: $("#auth-pass").value },
     });
-    localStorage.setItem("token", t);
+    if (res.status === "pending") {  // registered, awaiting approval — no token yet
+      $("#auth-ok").hidden = false;
+      $("#auth-submit").disabled = false;  // else the form locks until a reload
+      return;
+    }
+    localStorage.setItem("token", res.token);
     boot();
   } catch (err) { $("#auth-error").textContent = err.message; }
   $("#auth-submit").disabled = false;
@@ -250,10 +256,13 @@ $("#tab-find").onclick = () => switchTab("find");
 function switchTab(tab) {
   $("#shelf-view").hidden = tab !== "shelf";
   $("#find-view").hidden = tab !== "find";
+  $("#admin-view").hidden = tab !== "admin";
   $("#tab-shelf").classList.toggle("active", tab === "shelf");
   $("#tab-find").classList.toggle("active", tab === "find");
+  $("#tab-admin").classList.toggle("active", tab === "admin");
   if (tab === "shelf") loadShelf($("#search").value);
   else if (tab === "find") showQuota();
+  else if (tab === "admin") setAdminTab(adminTab);
 }
 
 /* rows carry `source: "annas"` from the annas search; absent = z-library.
@@ -575,9 +584,210 @@ async function boot() {
   try {
     const me = await api("/api/me");
     $("#user-email").textContent = me.email;
+    $("#tab-admin").hidden = me.role !== "admin";
+    me_id = me.id;
     loadShelf();
     refreshQueue();  // badge + resume polling if jobs are active
   } catch { /* 401 handled in api() */ }
 }
 $("#logout-btn").onclick = logout;
 boot();
+
+/* ---------- admin ---------- */
+let adminTab = "users";
+let zhPage = 1, zhTotal = 1;
+
+$("#tab-admin").onclick = () => switchTab("admin");
+document.querySelectorAll(".admin-tab").forEach((b) => {
+  b.onclick = () => setAdminTab(b.dataset.tab);
+});
+function setAdminTab(tab) {
+  adminTab = tab;
+  document.querySelectorAll(".admin-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === tab));
+  ["users", "settings", "zlib"].forEach((t) => { $(`#admin-${t}`).hidden = t !== tab; });
+  $("#admin-error").textContent = "";
+  if (tab === "users") loadAdminUsers();
+  if (tab === "settings") loadAdminSettings();
+  if (tab === "zlib") loadAdminZlib();
+}
+const adminFail = (e) => { $("#admin-error").textContent = e.message; };
+
+/* ----- users tab ----- */
+let adminUsersSeq = 0;
+async function loadAdminUsers() {
+  const seq = ++adminUsersSeq;  // stale-response guard: rapid tab switches / reloads
+  const box = $("#admin-user-list");
+  box.innerHTML = "";
+  let users;
+  try { users = await api("/api/admin/users"); } catch (e) { return adminFail(e); }
+  if (seq !== adminUsersSeq) return;  // a newer load superseded this one
+  for (const u of users) {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    row.innerHTML = `
+      <div class="au-email">${esc(u.email)}</div>
+      <span class="badge">${esc(u.role)}</span>
+      <span class="badge ${u.status === "active" ? "" : u.status === "disabled" ? "badge-danger" : "badge-warn"}">${esc(u.status)}</span>
+      <span class="result-sub">${u.books} books</span>
+      <span class="au-actions"></span>`;
+    const acts = row.querySelector(".au-actions");
+    const act = (label, fn, cls = "btn-ghost") => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls; b.textContent = label;
+      b.onclick = async () => {
+        try { await fn(); loadAdminUsers(); } catch (e) { adminFail(e); }
+      };
+      acts.appendChild(b);
+    };
+    if (u.status === "pending") act("Approve", () => api(`/api/admin/users/${u.id}/approve`, { method: "POST" }));
+    if (u.status === "disabled") act("Enable", () => api(`/api/admin/users/${u.id}/enable`, { method: "POST" }));
+    if (u.status === "active" && u.id !== me_id) {
+      act(u.role === "admin" ? "Demote" : "Make admin", () =>
+        api(`/api/admin/users/${u.id}/set-role`, { method: "POST", json: { role: u.role === "admin" ? "user" : "admin" } }));
+      act("Disable", () => api(`/api/admin/users/${u.id}/disable`, { method: "POST" }));
+      act("Reset PW", async () => {
+        const pw = prompt(`New password for ${u.email} (min 6 chars)`);
+        if (pw) await api(`/api/admin/users/${u.id}/reset-password`, { method: "POST", json: { password: pw } });
+      });
+    }
+    box.appendChild(row);
+  }
+}
+let me_id = null;  // set in boot(); self-demotion is hidden, backend still guards
+
+$("#admin-user-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/admin/users", { method: "POST", json: {
+      email: $("#nu-email").value, password: $("#nu-pass").value, role: $("#nu-role").value } });
+    $("#nu-email").value = ""; $("#nu-pass").value = "";
+    loadAdminUsers();
+  } catch (err) { adminFail(err); }
+};
+
+/* ----- settings tab ----- */
+const SECRET_FIELDS = { "zlib.password": "#set-zlib-password", "annas.secret_key": "#set-annas-key", "ai.api_key": "#set-ai-key" };
+const clearFlags = new Set();
+document.querySelectorAll("[data-clear]").forEach((b) => {
+  b.onclick = () => { clearFlags.add(b.dataset.clear); $(SECRET_FIELDS[b.dataset.clear]).value = ""; b.textContent = "cleared on save"; };
+});
+
+let settingsLoaded = false;
+async function loadAdminSettings() {
+  let s;
+  try { s = await api("/api/admin/settings"); }
+  catch (e) {
+    settingsLoaded = false;
+    $("#settings-save").disabled = true;  // a blank form must not wipe stored values
+    return adminFail(e);
+  }
+  settingsLoaded = true;
+  $("#settings-save").disabled = false;
+  $("#set-zlib-email").value = s["zlib.email"] || "";
+  $("#set-zlib-domain").value = s["zlib.domain"] || "";
+  $("#set-annas-base").value = s["annas.base_url"] || "";
+  $("#set-ai-base").value = s["ai.base_url"] || "";
+  $("#set-ai-model").value = s["ai.model"] || "";
+  $("#set-registration").value = s.registration || "approval";
+  $("#set-ai-enabled").checked = s["ai.enabled"] !== "0";
+  for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
+    const v = s[key];
+    $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("zlib") ? "password (fallback ZLIB_PASSWORD)"
+      : sel.includes("annas") ? "secret key (fallback ANNAS_ARCHIVE_SECRET_KEY)" : "API key (fallback ZAI_API_KEY)";
+    $(sel).value = "";
+  }
+  clearFlags.clear();
+  document.querySelectorAll("[data-clear]").forEach((b) => { b.textContent = "clear"; });
+}
+
+$("#admin-settings-form").onsubmit = async (e) => {
+  e.preventDefault();
+  if (!settingsLoaded) return adminFail(new Error("settings not loaded — nothing to save"));
+  const values = {
+    "zlib.email": $("#set-zlib-email").value.trim(),
+    "zlib.domain": $("#set-zlib-domain").value.trim(),
+    "annas.base_url": $("#set-annas-base").value.trim(),
+    "ai.base_url": $("#set-ai-base").value.trim(),
+    "ai.model": $("#set-ai-model").value.trim(),
+    "ai.enabled": $("#set-ai-enabled").checked ? "1" : "0",
+    registration: $("#set-registration").value,
+  };
+  for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
+    const v = $(sel).value;
+    if (v) values[key] = v;                 // typed replacement
+    else if (clearFlags.has(key)) values[key] = "";  // explicit clear -> env fallback
+    // else: leave untouched
+  }
+  try { await api("/api/admin/settings", { method: "PUT", json: { values } }); loadAdminSettings(); }
+  catch (err) { adminFail(err); }
+};
+
+/* ----- z-library tab ----- */
+async function loadAdminZlib() {
+  api("/api/admin/zlib/limits").then((l) => {
+    $("#zlib-admin-quota").textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads remaining`;
+  }).catch((e) => { $("#zlib-admin-quota").textContent = e.message; });
+  await loadZlibHistory();
+  loadZlibLibrary();
+  loadZlibBooklists();
+}
+$("#zh-prev").onclick = () => { if (zhPage > 1) { zhPage--; loadZlibHistory(); } };
+$("#zh-next").onclick = () => { if (zhPage < zhTotal) { zhPage++; loadZlibHistory(); } };
+
+const bookRow = (b, queueLabel) => {
+  const row = document.createElement("div");
+  row.className = "admin-row";
+  row.innerHTML = `
+    <div class="au-email">${esc(b.name || b.id)}</div>
+    <span class="badge">${esc((b.extension || "").toUpperCase())}</span>
+    <span class="result-sub">${esc(b.size || "")}${b.year ? " · " + esc(b.year) : ""}</span>
+    <span class="au-actions"></span>`;
+  if (queueLabel) {
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "btn-primary"; btn.textContent = queueLabel;
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = "Queued ✓";
+      try {
+        await api("/api/zlib/queue", { method: "POST", json: {
+          id: String(b.id), name: b.name || "", authors: b.authors || "",
+          cover: b.cover || "", extension: b.extension || "", size: String(b.size || "") } });
+        refreshQueue();
+      } catch (e) { btn.disabled = false; btn.textContent = queueLabel; adminFail(e); }
+    };
+    row.querySelector(".au-actions").appendChild(btn);
+  }
+  return row;
+};
+
+async function loadZlibHistory() {
+  const box = $("#zlib-history");
+  box.innerHTML = "";
+  let h;
+  try { h = await api(`/api/admin/zlib/history?page=${zhPage}`); } catch (e) {
+    box.textContent = e.message; return;
+  }
+  zhPage = h.page; zhTotal = h.total_pages || 1;
+  $("#zh-page").textContent = `page ${zhPage} / ${zhTotal}`;
+  for (const b of h.items) box.appendChild(bookRow(b, "Download"));
+  if (!h.items.length) box.textContent = "No download history.";
+}
+
+async function loadZlibLibrary() {
+  const box = $("#zlib-library");
+  box.innerHTML = "";
+  let lib;
+  try { lib = await api("/api/admin/zlib/library"); } catch (e) { box.textContent = e.message; return; }
+  if (!lib.available) { box.textContent = "Not available via API — tracked upstream (heartleo/zlib)."; return; }
+  for (const b of lib.items) box.appendChild(bookRow(b, "Download"));
+  if (!lib.items.length) box.textContent = "No saved books in the z-lib account.";
+}
+
+async function loadZlibBooklists() {
+  const box = $("#zlib-booklists");
+  box.innerHTML = "";
+  let bl;
+  try { bl = await api("/api/admin/zlib/booklists"); } catch (e) { box.textContent = e.message; return; }
+  if (!bl.available) { box.textContent = "Not available via API — tracked upstream (heartleo/zlib)."; return; }
+  for (const b of bl.items) box.appendChild(bookRow(b, ""));
+}

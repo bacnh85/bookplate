@@ -22,6 +22,7 @@ import tempfile
 from pathlib import Path
 
 from .db import DATA_DIR
+from . import settings
 
 
 class ZlibUnavailable(Exception):
@@ -53,9 +54,13 @@ def parse_size(s: str) -> int | None:
 
 
 class Zlib:
-    async def _run(self, *args: str, timeout: float = 90) -> tuple[int, str, str]:
-        proc = await asyncio.create_subprocess_exec(
+    async def _spawn(self, *args: str):
+        """Process seam (unit tests patch this): one zlib CLI invocation."""
+        return await asyncio.create_subprocess_exec(
             "zlib", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+    async def _run(self, *args: str, timeout: float = 90) -> tuple[int, str, str]:
+        proc = await self._spawn(*args)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout)
         except asyncio.TimeoutError:
@@ -77,7 +82,7 @@ class Zlib:
         return shutil.which("zlib") is not None
 
     def _creds(self) -> tuple[str, str] | None:
-        email, password = os.getenv("ZLIB_EMAIL"), os.getenv("ZLIB_PASSWORD")
+        email, password = settings.get("zlib.email"), settings.get("zlib.password")
         return (email, password) if email and password else None
 
     async def _login(self) -> None:
@@ -85,7 +90,7 @@ class Zlib:
         creds = self._creds()
         if not creds:
             raise ZlibConfigError("Z-Library login needs ZLIB_EMAIL/ZLIB_PASSWORD")
-        domain = os.getenv("ZLIB_DOMAIN", "https://z-lib.gd")
+        domain = settings.get("zlib.domain", "https://z-lib.gd")
         rc, out, err = await self._run(
             "login", "--eapi", "--email", creds[0], "--password", creds[1],
             "--domain", domain, timeout=120)
@@ -93,12 +98,23 @@ class Zlib:
             raise ZlibUnavailable(f"Z-Library login failed: {(err or out).strip()[:200]}")
 
     async def _ensure_session(self) -> None:
-        """Login from env creds if the CLI has no session yet (expiry is handled
-        by the re-login+retry in _run_authed)."""
+        """Login from env/DB creds when the CLI has no session, and RE-login when
+        the configured domain changed since the stored session (the CLI pins the
+        domain inside session.json — a Settings change alone would be ignored).
+        Session expiry is handled by the re-login+retry in _run_authed."""
         self._require_cli()
         cfg = Path.home() / ".config" / "zlib"
         if cfg.is_dir() and any(cfg.iterdir()):
-            return  # CLI manages state here; a stale session is handled on failure
+            if self._creds():
+                try:
+                    sess = json.loads((cfg / "session.json").read_text())
+                except (OSError, ValueError):
+                    sess = {}
+                want = settings.get("zlib.domain", "https://z-lib.gd").rstrip("/")
+                have = str(sess.get("domain", "")).rstrip("/")
+                if have and want and have != want:
+                    await self._login()
+            return
         if self._creds():
             await self._login()
 
@@ -155,6 +171,26 @@ class Zlib:
         except (json.JSONDecodeError, ValueError) as e:
             raise ZlibUnavailable(f"Z-Library profile returned junk: {e}") from e
 
+    async def history(self, page: int = 1, fmt: str = "") -> dict:
+        """Account download history (CLI: /eapi/user/book/downloaded).
+        Items carry id in 'id:hash' EAPI form — directly queueable via zlib.download."""
+        await self._ensure_session()
+        args = ["history", "--json", "-p", str(max(1, page))]
+        if fmt:
+            args += ["-f", fmt]
+        rc, out, err = await self._run_authed(*args, timeout=60)
+        if rc != 0:
+            raise ZlibUnavailable(f"Z-Library history failed: {(err or out).strip()[:200]}")
+        try:
+            parsed = json.loads(out)
+            items = parsed.get("items") if isinstance(parsed, dict) else None
+            if items is None:
+                raise ValueError("unexpected JSON shape")
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ZlibUnavailable(f"Z-Library history returned junk: {e}") from e
+        return {"items": items, "page": parsed.get("page", page),
+                "total_pages": parsed.get("total_pages", 1)}
+
     async def download(self, book_id: str,
                        on_progress=None, expected_size: int | None = None) -> tuple[bytes, dict]:
         """Returns (file_bytes, meta) — meta['_filename'] is the CLI's own filename.
@@ -168,9 +204,7 @@ class Zlib:
         out_dir = Path(tempfile.mkdtemp(dir=tmp))
 
         async def once() -> tuple[int, str, str]:
-            proc = await asyncio.create_subprocess_exec(
-                "zlib", "download", str(book_id), "--dir", str(out_dir),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await self._spawn("download", str(book_id), "--dir", str(out_dir))
             comm = asyncio.ensure_future(proc.communicate())
             loop = asyncio.get_event_loop()
             deadline = loop.time() + 600

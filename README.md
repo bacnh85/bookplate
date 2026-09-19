@@ -45,10 +45,17 @@ container crash-loops.
 
 ### Configuration
 
-Optional keys are passed as env (`-e` / compose `environment:`) — same vars as the table
-below (`.env.local` is only a local-dev convenience, never used in Docker):
+Configuration lives in **Admin → Settings** (app-managed, stored in `data/ebook.db`) and
+falls back to the env vars below when a field is empty — so env-only deployments keep
+working, and a value saved in the UI takes over until cleared (the UI's "clear" link
+reverts to env). Secrets are masked in reads and never echoed back.
 
+Optional env keys (seeding/fallback):
+
+- `ADMIN_EMAIL` — on startup, promote this account to admin (after the auto-promotion
+  rule below picks the earliest active account).
 - `ZAI_API_KEY` (+ optional `ZAI_BASE_URL` / `ZAI_MODEL`) — AI metadata fallback.
+  `ZAI_ENABLED=0` (or the Settings toggle) turns it off.
 - `ZLIB_EMAIL` / `ZLIB_PASSWORD` — Z-Library search/download. The `zlib` CLI is baked
   into the image; with credentials set it auto-logs-in on demand and re-logins if a
   session expires (the session is per-container and re-establishes after restarts).
@@ -57,6 +64,28 @@ below (`.env.local` is only a local-dev convenience, never used in Docker):
   secret key from your AA account page; it both authenticates the site (search) and
   authorizes fast downloads. Mirror rotting? Set `ANNAS_BASE_URL`
   (default `https://annas-archive.gd`). See the Anna's Archive section below.
+
+### Users, roles & admin bootstrap
+
+- The **first account ever created becomes the admin** — on a fresh system just
+  register through the normal form.
+- On upgrade, if no admin exists, the **earliest active account** is promoted at
+  startup; `ADMIN_EMAIL` overrides that choice. Accounts disabled before the upgrade
+  are never promoted.
+- Registration defaults to **approval required**: new signups land as *pending*, can't
+  log in, and appear in Admin → Users for approval. Admin → Settings can switch
+  registration to **closed**.
+- Admins manage accounts in Admin → Users: approve/enable/disable, set role, reset
+  password. The last active admin can't be demoted or disabled (409).
+- All users share the one Z-Library account's daily download limit (single queue,
+  first-come-first-served).
+
+### Z-Library admin (Admin → Z-Library)
+
+Quota display, the account's **download history** (one click re-queues any item), and
+**My library** (`/eapi/user/book/saved`) — admin-only. **Booklists are not exposed by
+z-lib's API** (the endpoint doesn't exist in the EAPI surface; tracked upstream at
+heartleo/zlib) and show as unavailable.
 
 ### Notes
 

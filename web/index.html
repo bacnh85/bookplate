@@ -14,6 +14,7 @@
     <input type="email" id="auth-email" placeholder="Email" autocomplete="username" required>
     <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
     <div class="error-line" id="auth-error" role="alert"></div>
+    <div class="result-sub" id="auth-ok" hidden>Account created — waiting for admin approval.</div>
     <button class="btn-primary" id="auth-submit" type="submit">Sign in</button>
     <button class="btn-ghost" id="auth-toggle" type="button">New here? Create an account</button>
   </form>
@@ -25,6 +26,7 @@
     <button class="btn-ghost active" id="tab-shelf" type="button">My shelf</button>
     <button class="btn-ghost" id="tab-find" type="button" title="Search Z-Library">Find books</button>
     <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
+    <button class="btn-ghost" id="tab-admin" type="button" hidden>Admin</button>
     <span class="spacer"></span>
     <button class="btn-primary" id="upload-btn" type="button">Add books</button>
     <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
@@ -51,6 +53,64 @@
       </div>
       <div class="error-line" id="zlib-error"></div>
       <div class="results" id="zlib-results"></div>
+    </div>
+
+    <div id="admin-view" hidden>
+      <div class="admin-tabs" role="tablist">
+        <button class="btn-ghost admin-tab active" data-tab="users" type="button">Users</button>
+        <button class="btn-ghost admin-tab" data-tab="settings" type="button">Settings</button>
+        <button class="btn-ghost admin-tab" data-tab="zlib" type="button">Z-Library</button>
+      </div>
+      <div class="error-line" id="admin-error" role="alert"></div>
+
+      <section id="admin-users">
+        <form id="admin-user-form" class="admin-row">
+          <input type="email" id="nu-email" placeholder="new.user@email" required>
+          <input type="password" id="nu-pass" placeholder="password" minlength="6" required>
+          <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
+          <button class="btn-primary" type="submit">Create</button>
+        </form>
+        <div id="admin-user-list" class="admin-table"></div>
+      </section>
+
+      <section id="admin-settings" hidden>
+        <form id="admin-settings-form">
+          <h3>Z-Library account</h3>
+          <input type="email" id="set-zlib-email" placeholder="email (fallback ZLIB_EMAIL)">
+          <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password (fallback ZLIB_PASSWORD)" autocomplete="new-password">
+            <button type="button" class="btn-ghost link" data-clear="zlib.password">clear</button></div>
+          <input type="url" id="set-zlib-domain" placeholder="mirror, e.g. https://z-lib.gd">
+          <h3>Anna's Archive</h3>
+          <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key (fallback ANNAS_ARCHIVE_SECRET_KEY)" autocomplete="new-password">
+            <button type="button" class="btn-ghost link" data-clear="annas.secret_key">clear</button></div>
+          <input type="url" id="set-annas-base" placeholder="mirror, e.g. https://annas-archive.gd">
+          <h3>AI metadata assist</h3>
+          <label class="check-row"><input type="checkbox" id="set-ai-enabled"> enabled</label>
+          <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key (fallback ZAI_API_KEY)" autocomplete="new-password">
+            <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
+          <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
+          <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
+          <h3>Registration</h3>
+          <select id="set-registration">
+            <option value="approval">new accounts need admin approval</option>
+            <option value="closed">registration closed</option>
+          </select>
+          <button class="btn-primary" id="settings-save" type="submit">Save settings</button>
+        </form>
+      </section>
+
+      <section id="admin-zlib" hidden>
+        <div id="zlib-admin-quota" class="result-sub"></div>
+        <h3>Download history</h3>
+        <div class="admin-pager"><button class="btn-ghost" id="zh-prev" type="button">←</button>
+          <span id="zh-page" class="result-sub"></span>
+          <button class="btn-ghost" id="zh-next" type="button">→</button></div>
+        <div id="zlib-history" class="admin-table"></div>
+        <h3>My library</h3>
+        <div id="zlib-library" class="admin-table"></div>
+        <h3>Booklists</h3>
+        <div id="zlib-booklists" class="admin-table"></div>
+      </section>
     </div>
   </main>
 </section>

@@ -1,6 +1,5 @@
 """Metadata pipeline: embedded metadata -> filename parse -> Google Books/OpenLibrary -> AI fallback."""
 import hashlib
-import os
 import re
 import textwrap
 from pathlib import Path
@@ -9,7 +8,8 @@ from xml.sax.saxutils import escape
 import httpx
 from pypdf import PdfReader
 
-from .ai import ai_extract
+from . import settings
+from .ai import ai_enabled, ai_extract
 
 EXTS = {"pdf", "epub", "mobi", "azw3", "fb2", "cbz"}
 
@@ -233,7 +233,7 @@ async def build_metadata(path: Path, orig_name: str) -> dict:
         meta["authors"] = fn_author
     if meta["title"] and meta["title"] != "Unknown title":
         await enrich(meta)
-    if (not meta["title"] or not meta["authors"]) and os.getenv("ZAI_API_KEY"):
+    if (not meta["title"] or not meta["authors"]) and ai_enabled():
         got = await ai_extract(orig_name, meta["sample_text"]) or {}
         _fill(meta, got)
     if not meta["title"]:

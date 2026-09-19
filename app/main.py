@@ -13,12 +13,13 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, metadata, opds
+from . import db, metadata, opds, settings
 from .annas_client import AnnasConfigError, AnnasUnavailable, annas
-from .auth import UserDep, hash_password, make_token, verify_password
+from .auth import AdminDep, UserDep, admin_required, hash_password, make_token, verify_password
 from .storage import book_path, cover_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
 from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
+from . import zlib_eapi
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 TMP_DIR = db.DATA_DIR / "tmp"
@@ -53,15 +54,28 @@ def register(c: Credentials, response: Response):
     if not c.email or len(c.password) < 6:
         raise HTTPException(400, "email and password (>=6 chars) required")
     with db.conn() as con:
+        first = con.execute("SELECT 1 FROM users").fetchone() is None
+        if not first and settings.get("registration", "approval") == "closed":
+            raise HTTPException(403, "registration is closed")
         try:
             cur = con.execute(
-                "INSERT INTO users(email, password_hash) VALUES(?,?)",
-                (c.email.strip().lower(), hash_password(c.password)))
+                "INSERT INTO users(email, password_hash, role, status) VALUES(?,?,?,?)",
+                (c.email.strip().lower(), hash_password(c.password),
+                 "admin" if first else "user",  # first user bootstraps the system
+                 "active" if first else "pending"))
         except Exception:
             raise HTTPException(409, "email already registered")
-        token = make_token(cur.lastrowid)
-        _set_session(response, token)
-        return {"token": token}
+        uid, active = cur.lastrowid, first
+        if first and con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] > 1:
+            # lost a bootstrap race (two registrations raced the empty table under
+            # WAL): fall back to the normal approval path — only ONE first admin
+            con.execute("UPDATE users SET role='user', status='pending' WHERE id=?", (uid,))
+            active = False
+    if not active:  # pending: no token until an admin approves
+        return {"status": "pending"}
+    token = make_token(uid)
+    _set_session(response, token)
+    return {"status": "active", "token": token}
 
 
 @app.post("/api/auth/login")
@@ -71,6 +85,10 @@ def login(c: Credentials, response: Response):
             "SELECT * FROM users WHERE email=?", (c.email.strip().lower(),)).fetchone()
     if not row or not verify_password(c.password, row["password_hash"]):
         raise HTTPException(401, "invalid credentials")
+    if row["status"] == "pending":
+        raise HTTPException(403, "account awaiting admin approval")
+    if row["status"] == "disabled":
+        raise HTTPException(403, "account disabled")
     token = make_token(row["id"])
     _set_session(response, token)
     return {"token": token}
@@ -84,7 +102,8 @@ def _set_session(response: Response, token: str) -> None:
 
 @app.get("/api/me")
 def me(user=UserDep):
-    return {"id": user["id"], "email": user["email"]}
+    return {"id": user["id"], "email": user["email"],
+            "role": user["role"], "status": user["status"]}
 
 
 # ---------- books ----------
@@ -409,6 +428,177 @@ def annas_enqueue(req: ZlibQueueReq, user=UserDep):
 @app.delete("/api/annas/queue/{job_id}")
 def annas_queue_remove(job_id: int, user=UserDep):
     return zlib_queue_remove(job_id, user=user)
+
+
+# ---------- admin: user management ----------
+
+class AdminUserReq(BaseModel):
+    email: str
+    password: str
+    role: str = "user"
+
+
+class SetRoleReq(BaseModel):
+    role: str
+
+
+class PasswordReq(BaseModel):
+    password: str
+
+
+def _active_admin_others(con, uid: int) -> int:
+    return con.execute(
+        "SELECT COUNT(*) c FROM users WHERE role='admin' AND status='active' AND id != ?",
+        (uid,)).fetchone()["c"]
+
+
+@app.get("/api/admin/users")
+def admin_users(admin=AdminDep):
+    with db.conn() as con:
+        return [dict(r) for r in con.execute(
+            """SELECT u.id, u.email, u.role, u.status, u.created_at,
+               (SELECT COUNT(*) FROM user_books ub WHERE ub.user_id=u.id) AS books
+               FROM users u ORDER BY u.id""")]
+
+
+@app.post("/api/admin/users")
+def admin_create_user(req: AdminUserReq, admin=AdminDep):
+    if not req.email or len(req.password) < 6:
+        raise HTTPException(400, "email and password (>=6 chars) required")
+    if req.role not in ("user", "admin"):
+        raise HTTPException(400, "role must be user or admin")
+    with db.conn() as con:
+        try:
+            cur = con.execute(
+                "INSERT INTO users(email, password_hash, role, status) VALUES(?,?,?,'active')",
+                (req.email.strip().lower(), hash_password(req.password), req.role))
+        except Exception:
+            raise HTTPException(409, "email already registered")
+        row = con.execute("SELECT id, email, role, status FROM users WHERE id=?",
+                          (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def _set_status(uid: int, status: str):
+    with db.conn() as con:
+        row = con.execute("SELECT id, role FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            _raise404()
+        # never strand the system without an active admin (approval queue would deadlock)
+        if status == "disabled" and row["role"] == "admin" and _active_admin_others(con, uid) == 0:
+            raise HTTPException(409, "cannot disable the last admin")
+        con.execute("UPDATE users SET status=? WHERE id=?", (status, uid))
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{uid}/approve")
+def admin_approve(uid: int, admin=AdminDep):
+    return _set_status(uid, "active")
+
+
+@app.post("/api/admin/users/{uid}/enable")
+def admin_enable(uid: int, admin=AdminDep):
+    return _set_status(uid, "active")
+
+
+@app.post("/api/admin/users/{uid}/disable")
+def admin_disable(uid: int, admin=AdminDep):
+    return _set_status(uid, "disabled")
+
+
+@app.post("/api/admin/users/{uid}/set-role")
+def admin_set_role(uid: int, req: SetRoleReq, admin=AdminDep):
+    if req.role not in ("user", "admin"):
+        raise HTTPException(400, "role must be user or admin")
+    with db.conn() as con:
+        row = con.execute("SELECT id, role FROM users WHERE id=?", (uid,)).fetchone()
+        if not row:
+            _raise404()
+        if row["role"] == "admin" and req.role == "user" and _active_admin_others(con, uid) == 0:
+            raise HTTPException(409, "cannot demote the last admin")
+        con.execute("UPDATE users SET role=? WHERE id=?", (req.role, uid))
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{uid}/reset-password")
+def admin_reset_password(uid: int, req: PasswordReq, admin=AdminDep):
+    if len(req.password) < 6:
+        raise HTTPException(400, "password (>=6 chars) required")
+    with db.conn() as con:
+        cur = con.execute("UPDATE users SET password_hash=? WHERE id=?",
+                          (hash_password(req.password), uid))
+        if cur.rowcount == 0:
+            _raise404()
+    return {"ok": True}
+
+
+# ---------- admin: app-managed settings ----------
+
+SECRET_SETTINGS = {"zlib.password", "annas.secret_key", "ai.api_key"}
+
+
+def _mask(v: str) -> dict:
+    return {"set": bool(v), "hint": ("…" + v[-4:]) if v else ""}
+
+
+@app.get("/api/admin/settings")
+def admin_get_settings(admin=AdminDep):
+    out = {}
+    for key in settings.ENV_FALLBACK:
+        v = settings.get(key)
+        out[key] = _mask(v) if key in SECRET_SETTINGS else v
+    out["registration"] = settings.get("registration", "approval")
+    return out
+
+
+class SettingsReq(BaseModel):
+    values: dict[str, str]
+
+
+@app.put("/api/admin/settings")
+def admin_put_settings(req: SettingsReq, admin=AdminDep):
+    for k, v in req.values.items():
+        if k not in settings.ENV_FALLBACK and k != "registration":
+            raise HTTPException(400, f"unknown setting {k}")
+        if k == "registration" and v not in ("approval", "closed"):
+            raise HTTPException(400, "registration must be 'approval' or 'closed'")
+    for k, v in req.values.items():  # validate all before writing any
+        settings.set(k, v)
+    return {"ok": True}
+
+
+# ---------- admin: z-library account management ----------
+
+@app.get("/api/admin/zlib/limits")
+async def admin_zlib_limits(admin=AdminDep):
+    try:
+        return await zlib.limits()
+    except ZlibUnavailable as e:
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/admin/zlib/history")
+async def admin_zlib_history(page: int = 1, fmt: str = "", admin=AdminDep):
+    try:
+        return await zlib.history(page=page, fmt=fmt)
+    except ZlibUnavailable as e:
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/admin/zlib/library")
+async def admin_zlib_library(page: int = 1, admin=AdminDep):
+    try:
+        return await zlib_eapi.library(page=page)
+    except ZlibUnavailable as e:
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/admin/zlib/booklists")
+async def admin_zlib_booklists(admin=AdminDep):
+    try:
+        return await zlib_eapi.booklists()
+    except ZlibUnavailable as e:
+        raise HTTPException(503, str(e))
 
 
 # ---------- download queue worker ----------
