@@ -69,6 +69,15 @@ def make_pdf(title: str | None, author: str | None) -> bytes:
     return data.getvalue()
 
 
+def make_encrypted_pdf(title: str) -> bytes:
+    w = PdfWriter()
+    w.add_blank_page(width=612, height=792)
+    w.add_metadata({"/Title": title})
+    w.encrypt(f"{rand}-pass")  # user+owner password: unrenderable thumbnail
+    data = io.BytesIO(); w.write(data)
+    return data.getvalue()
+
+
 def upload(cx, token, name, data):
     return cx.post(f"{BASE}/api/books",
                    files={"file": (name, data)},
@@ -98,6 +107,15 @@ def main():
     b3 = r["book"]
     check("pdf metadata", b3["title"].startswith("Computer Networks") and b3["authors"] == "Andrew Tanenbaum",
           f'{b3["title"]} / {b3["authors"]}')
+    r = cx.get(f"{BASE}/api/books/{b3['id']}/cover", headers={"Authorization": f"Bearer {t_alice}"})
+    check("pdf cover is rendered page-1 jpeg", r.status_code == 200 and r.headers.get("content-type") == "image/jpeg",
+          f"{r.status_code} {r.headers.get('content-type', '')}")
+
+    # 3b. encrypted pdf: render fails -> fallback chain must still guarantee a cover
+    r = upload(cx, t_alice, f"Anon - Locked Volume {rand}.pdf", make_encrypted_pdf(f"Locked {rand}"))
+    r = cx.get(f"{BASE}/api/books/{r['book']['id']}/cover", headers={"Authorization": f"Bearer {t_alice}"})
+    check("encrypted pdf still has a cover (fallback)", r.status_code == 200 and r.headers.get("content-type", "").startswith("image/"),
+          f"{r.status_code} {r.headers.get('content-type', '')}")
 
     # 4. exact dedup: same bytes again
     dup_pdf = make_pdf("Computer Networks", "Andrew Tanenbaum")

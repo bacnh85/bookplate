@@ -126,7 +126,16 @@ def list_books(q: str = "", user=UserDep):
         params["q"] = terms
     sql += " ORDER BY b.created_at DESC, b.id DESC"
     with db.conn() as con:
-        return [dict(r) for r in con.execute(sql, params)]
+        rows = [dict(r) for r in con.execute(sql, params)]
+    # cover URL version = cover file mtime: covers are served immutable+1y, so a
+    # re-render (backfill) must change the URL or browsers keep the old pixels
+    for b in rows:
+        if b["cover_ext"]:
+            try:
+                b["cover_v"] = int(cover_path(b["sha256"], b["cover_ext"]).stat().st_mtime)
+            except OSError:
+                b["cover_v"] = 0
+    return rows
 
 
 @app.get("/api/books/{book_id}")

@@ -98,6 +98,16 @@
   <div class="empty" id="downloads-empty" hidden>Nothing queued.<small>Use Find books, then "Get later" on a result.</small></div>
 </dialog>
 
+<dialog id="upload-dialog">
+  <button class="btn-ghost detail-close" id="upload-close" type="button" aria-label="Close">✕</button>
+  <h2>Add books</h2>
+  <button class="dropzone" id="dropzone" type="button">
+    <span class="dropzone-big">Drop files here</span>
+    <span class="dropzone-sub">or click to browse — PDF, EPUB, MOBI, AZW3, FB2, CBZ</span>
+  </button>
+  <p class="result-sub">Uploads run one by one; progress shows bottom-right and stays visible after this closes.</p>
+</dialog>
+
 <div id="transfers" aria-live="polite"></div>
 
 <script type="module" src="/app.js"></script>

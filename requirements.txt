@@ -5,3 +5,4 @@ PyJWT
 httpx
 ebooklib
 pypdf
+pymupdf

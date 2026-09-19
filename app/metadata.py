@@ -55,22 +55,47 @@ def from_epub(path: Path, meta: dict) -> None:
         meta["cover_ext"] = Path(item.file_name).suffix.lstrip(".") or "jpg"
 
 
+def _render_pdf_page(path: Path) -> tuple[bytes, str] | None:
+    """Rasterize page 1 to a JPEG — the guaranteed-correct thumbnail. None when
+    the renderer fails (encrypted, corrupt, missing page)."""
+    try:
+        import pymupdf
+        doc = pymupdf.open(path)
+        try:
+            if doc.needs_pass or not doc.page_count:
+                return None
+            page = doc[0]
+            scale = min(480 / page.rect.width, 4) if page.rect.width else 1
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+            return pix.tobytes("jpeg"), "jpg"
+        finally:
+            doc.close()
+    except Exception:
+        return None
+
+
 def from_pdf(path: Path, meta: dict) -> None:
     reader = PdfReader(str(path))
     m = reader.metadata
     if m:
         meta["title"] = (m.title or "").strip()
         meta["authors"] = (m.author or "").strip()
-    try:  # first browser-displayable image on page 1 — usually the cover
-        for img in reader.pages[0].images:
-            if img.data[:3] == b"\xff\xd8\xff":
-                meta["cover"], meta["cover_ext"] = img.data, "jpg"
-                break
-            if img.data[:8] == b"\x89PNG\r\n\x1a\n":
-                meta["cover"], meta["cover_ext"] = img.data, "png"
-                break
-    except Exception:
-        pass  # JPX/CCITT etc. don't render in <img> — let enrichment try instead
+    # 1. rendered page 1 — always correct (it IS the first page); 2. embedded
+    # browser-displayable image as fallback when the renderer fails
+    got = _render_pdf_page(path)
+    if got:
+        meta["cover"], meta["cover_ext"] = got
+    else:
+        try:
+            for img in reader.pages[0].images:
+                if img.data[:3] == b"\xff\xd8\xff":
+                    meta["cover"], meta["cover_ext"] = img.data, "jpg"
+                    break
+                if img.data[:8] == b"\x89PNG\r\n\x1a\n":
+                    meta["cover"], meta["cover_ext"] = img.data, "png"
+                    break
+        except Exception:
+            pass  # JPX/CCITT etc. don't render in <img> — let enrichment try instead
     try:
         meta["sample_text"] = "".join(
             (p.extract_text() or "") for p in reader.pages[:3]

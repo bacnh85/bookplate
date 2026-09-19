@@ -102,7 +102,7 @@ async function loadShelf(q = "") {
     card.innerHTML = `
       <div class="cover" title="Read ${esc(b.title)}">
         <div class="spine-title">${esc(b.title)}</div>
-        ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover" alt="" onerror="this.remove()">` : ""}
+        ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
       </div>
       <div class="book-meta">
         <div class="book-title">${esc(b.title)}</div>
@@ -162,10 +162,57 @@ async function downloadBook(btn, b) {
 }
 
 /* ---------- upload ---------- */
-$("#upload-btn").onclick = () => $("#file-input").click();
-$("#file-input").onchange = async (e) => {
-  const files = [...e.target.files];
-  await Promise.all(files.map(async (f) => {
+$("#upload-btn").onclick = () => $("#upload-dialog").showModal();
+$("#upload-close").onclick = () => $("#upload-dialog").close();
+$("#upload-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();  // backdrop click
+});
+
+const dialog = $("#upload-dialog");
+const isFileDrag = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+// a file drop anywhere on the page must never navigate — that destroys SPA
+// state and aborts in-flight uploads
+document.addEventListener("dragover", (e) => { if (isFileDrag(e)) e.preventDefault(); });
+document.addEventListener("drop", (e) => { if (isFileDrag(e)) e.preventDefault(); });
+// dropping anywhere on the open dialog is upload intent, not just the dropzone
+dialog.addEventListener("dragover", (e) => { if (isFileDrag(e)) e.preventDefault(); });
+dialog.addEventListener("drop", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  dialog.close();
+  uploadFiles([...e.dataTransfer.files]);
+});
+const dropzone = $("#dropzone");
+dropzone.onclick = () => $("#file-input").click();
+dropzone.addEventListener("dragover", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  dropzone.classList.add("drag");
+});
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag"));
+dropzone.addEventListener("drop", (e) => {
+  if (!isFileDrag(e)) return;
+  e.preventDefault();
+  e.stopPropagation();  // dialog-level drop handler must not double-upload
+  dropzone.classList.remove("drag");
+  dialog.close();
+  uploadFiles([...e.dataTransfer.files]);
+});
+$("#file-input").onchange = (e) => {
+  $("#upload-dialog").close();
+  uploadFiles([...e.target.files]);
+  e.target.value = "";
+};
+
+const ACCEPT_EXTS = $("#file-input").accept.split(",").map((s) => s.trim().toLowerCase().replace(/^\./, ""));
+
+async function uploadFiles(files) {
+  const good = [], bad = [];
+  for (const f of files)
+    (ACCEPT_EXTS.includes(f.name.split(".").pop().toLowerCase()) ? good : bad).push(f);
+  if (bad.length) transferCard(bad.map((f) => f.name).join(", "))
+    .fail(`unsupported format — allowed: ${ACCEPT_EXTS.join(", ")}`);
+  for (const f of good) {  // sequential: gentler on the server, readable progress
     const card = transferCard(f.name);
     try {
       const fd = new FormData(); fd.append("file", f);
@@ -178,10 +225,9 @@ $("#file-input").onchange = async (e) => {
       else if (res.similar.length) card.done(`Added — note: "${res.similar[0].title}" may be the same book`);
       else card.done("Added ✓");
     } catch (err) { card.fail(err.message); }
-  }));
-  e.target.value = "";
+  }
   loadShelf();
-};
+}
 
 /* ---------- share ---------- */
 let shareBookId = null;
