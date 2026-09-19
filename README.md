@@ -5,6 +5,72 @@ in-browser reading, z-library search/download (optional), Anna's Archive
 search/download (optional, member key), user-to-user sharing,
 OPDS for iOS reader apps, AI metadata fallback (optional).
 
+![My shelf](docs/images/home.png)
+
+![Find books — Z-Library search](docs/images/find-books.png)
+
+![Book detail with description and related books](docs/images/book-detail.png)
+
+## Features
+
+**Library**
+- Upload PDF, EPUB, MOBI, AZW3, FB2, CBZ — drag-and-drop or file picker, sequential
+  batch uploads with per-file progress.
+- **Automatic metadata**: embedded metadata → filename parsing → Google Books /
+  Open Library enrichment → optional AI fallback (any OpenAI-compatible endpoint).
+- **Content-addressed storage** (SHA-256): re-uploading the same file dedups
+  instantly; a *logical* duplicate (same normalized title + author, different file)
+  is flagged so you can compare scans.
+- **Guaranteed covers**: real cover art when available, page-1 render for PDFs,
+  and a deterministic generated cover as the last resort — every book looks like a
+  book on the shelf.
+- **Full-text search** (SQLite FTS5) across title, author, categories and ISBN,
+  with quoted-phrase support.
+
+**Reading**
+- **In-browser reader** (vendored foliate-js): paginated EPUB/MOBI/AZW3/FB2,
+  current position remembered per user, mobile-friendly.
+- **Download** any book for offline reading; CBZ/PDF open natively where supported.
+
+**Find books (integrations)**
+- **Z-Library** via the bundled `zlib` CLI: search, results with covers/ratings/
+  year/language/file size, and one-click *Get later* into the download queue.
+  Auto-login from your account, automatic session renewal, configurable mirror.
+- **Anna's Archive**: search (member key) and downloads that work both for members
+  (fast API path) and free accounts (automatic slow partner-server fallback with
+  waitlist handling).
+- **Download queue**: shared, sequential, quota-aware. It respects the Z-Library
+  daily limit (waits and re-checks when exhausted), retries transient failures with
+  backoff (3 attempts, 5/30 min), and survives restarts (jobs resume).
+  See progress per job; retry or cancel from the UI.
+
+**Users & admin**
+- Multi-user with roles: **admin** and **user**.
+- **First registered account becomes the admin**; `ADMIN_EMAIL` env overrides which
+  account is promoted.
+- **Registration control**: open-with-approval (default) or closed. Pending accounts
+  can't sign in until an admin approves them in **Admin → Users**.
+- Admin can create accounts, approve/enable/disable, change roles, reset passwords.
+  The last active admin can't be demoted or disabled.
+- **Per-user shelf**: users only see books they uploaded or that were shared with
+  them; sharing is per user.
+- All users share one Z-Library account and its daily download quota (FIFO queue).
+
+**Admin panel** (in-app, admin only)
+- **Users**: create, approve, enable/disable, set role, reset password.
+- **Settings** (DB-backed, env fallback): Z-Library account + mirror, Anna's Archive
+  key + mirror, AI assist (enable/key/base/model), registration mode. Secrets are
+  stored in the database (same trust boundary as `.env.local`) and masked in the API.
+- **Z-Library**: daily quota, the account's **download history** (one-click re-queue),
+  and the account's **saved books** (My library). Booklists are not exposed by
+  z-lib's API and show as unavailable.
+
+**Ops**
+- Single container, one volume (`/app/data`) holds everything — DB, books, covers.
+- Multi-arch image (amd64 + arm64), checksum-verified `zlib` CLI baked in.
+- OPDS 1.2 catalog for iOS reader apps (basic auth).
+- No build step: vanilla-JS frontend, vendored foliate-js.
+
 ## Deploy with Docker
 
 Multi-arch image (`linux/amd64` + `linux/arm64`) published to GHCR by CI on every push to
@@ -161,8 +227,9 @@ Downloads work with OR without a membership:
 
 Practical notes:
 
-- The secret key authenticates search; it lives only in env, the derived session
-  cookie only in server RAM.
+- The secret key authenticates search; it is stored in **Admin → Settings** (or
+  the `ANNAS_ARCHIVE_SECRET_KEY` env fallback), never in git; the derived session
+  cookie is kept in server RAM only.
 - DDoS-Guard decisions are per-IP: if your server's IP is flagged, search (and
   the slow-download pages) get a bot check the server can't pass. Fix: open the
   mirror in a normal browser **on the same network** and complete the checkbox
@@ -170,14 +237,22 @@ Practical notes:
 - AA rotates domains; if the default mirror dies, point `ANNAS_BASE_URL` at a
   current one (mirrors are listed on the AA site/FAQ).
 
-Add keys to `.env.local`, then restart: `kill $(cat data/serve.pid)` and start
-again. No web settings UI — secrets stay out of the database and out of git.
+Add keys via **Admin → Settings** (or `.env.local` for local dev), no restart
+needed for settings saved in the UI.
 
 ## Test
 
 ```bash
-.venv/bin/python scripts/selftest.py   # e2e checks against a running server
+.venv/bin/python scripts/selftest.py      # e2e checks against a running server
+.venv/bin/python scripts/test_admin.py    # settings + roles/approval (offline)
+.venv/bin/python scripts/test_zlib.py     # z-lib adapter + EAPI probe (offline)
+.venv/bin/python scripts/test_annas.py    # Anna's Archive adapter (offline)
 ```
+
+The e2e suite runs two ways: on a **fresh database** (CI) the first registered
+user is the admin and the suite approves its own second user; on a **populated
+server** set `SELFTEST_ADMIN_EMAIL` / `SELFTEST_ADMIN_PASS` to an existing admin
+so the suite can approve its test users.
 
 ## iPhone / iPad
 
@@ -188,8 +263,12 @@ again. No web settings UI — secrets stay out of the database and out of git.
 
 ## Layout
 
-- `app/` — FastAPI: `db.py` (SQLite+FTS5), `auth.py`, `storage.py` (SHA-256 store),
-  `metadata.py` (extraction chain), `ai.py`, `zlib_client.py`, `annas_client.py`,
+- `app/` — FastAPI: `db.py` (SQLite+FTS5, migrations), `auth.py` (JWT + roles),
+  `settings.py` (DB-backed settings with env fallback), `storage.py` (SHA-256 store),
+  `metadata.py` (extraction chain), `ai.py`, `zlib_client.py`, `zlib_eapi.py`
+  (z-lib admin: history/library), `annas_client.py`,
   `webfetch.py` (SSRF-pinned fetches), `opds.py`, `main.py`
 - `web/` — vanilla JS SPA + vendored `foliate-js` (no build step)
+- `scripts/` — `serve.sh` (local keepalive server), e2e + unit test suites
+- `docs/images/` — README screenshots
 - `data/` — SQLite DB, content-addressed book files, covers (gitignored)
