@@ -7,9 +7,10 @@ covers, download, delete, OPDS, z-lib gating, admin RBAC + settings + z-lib admi
 
 Usage: .venv/bin/python scripts/selftest.py [base_url]
 
-On a populated server (registrations pend), set SELFTEST_ADMIN_EMAIL and
-SELFTEST_ADMIN_PASS so the suite can approve its test users; on a fresh DB (CI)
-the first registered user becomes admin automatically and no creds are needed.
+Registrations always land as *pending*; the suite signs in with the bootstrap
+admin and approves its own users. Admin creds: SELFTEST_ADMIN_USER /
+SELFTEST_ADMIN_PASS env — or, when the server shares this filesystem and was
+booted with a generated password, data/initial_admin_password is read.
 """
 import io
 import os
@@ -29,9 +30,19 @@ BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8480"
 rand = "".join(random.choices(string.hexdigits.lower(), k=6))
 ALICE, BOB = f"alice-{rand}@t.io", f"bob-{rand}@t.io"
 PASS = "hunter22"
-# live-server mode: creds of an existing admin (registrations pend on a populated DB)
-ADMIN_EMAIL = os.getenv("SELFTEST_ADMIN_EMAIL", "")
-ADMIN_PASS = os.getenv("SELFTEST_ADMIN_PASS", "")
+
+
+def _initial_admin_pw() -> str:
+    """Fresh-DB dev mode: bootstrap password file beside the server's data dir."""
+    f = Path(__file__).resolve().parent.parent / "data" / "initial_admin_password"
+    try:
+        return f.read_text().strip()
+    except OSError:
+        return ""
+
+
+ADMIN_USER = os.getenv("SELFTEST_ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("SELFTEST_ADMIN_PASS", "") or _initial_admin_pw()
 
 ok = total = 0
 def check(name, cond, detail=""):
@@ -91,52 +102,43 @@ def upload(cx, token, name, data):
                    headers={"Authorization": f"Bearer {token}"}).json()
 
 
-def _uid_by_email(cx, headers, email):
+def _uid_by_name(cx, headers, username):
     users = cx.get(f"{BASE}/api/admin/users", headers=headers).json()
-    return next(u["id"] for u in users if u["email"] == email)
+    return next(u["id"] for u in users if u["username"] == username)
 
 
 def main():
     cx = httpx.Client(timeout=30, base_url=BASE)
-    # 2. auth — register + approval flow.
-    # Fresh DB (CI): the FIRST user becomes admin; the second lands pending and the
-    # first approves them. Live server with existing users: registrations pend, so
-    # the runner must provide SELFTEST_ADMIN_EMAIL/SELFTEST_ADMIN_PASS to create
-    # the test users as active.
-    ralice = cx.post("/api/auth/register", json={"email": ALICE, "password": PASS}).json()
-    t_admin = ""
-    alice_is_admin = "token" in ralice
-    if alice_is_admin:
-        t_alice = ralice["token"]
-    else:
-        check("register alice pending on live server", ralice.get("status") == "pending", str(ralice)[:120])
-        la = cx.post(f"{BASE}/api/auth/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASS})
-        check("admin login (SELFTEST_ADMIN_* env)", la.status_code == 200, la.text[:120])
-        t_admin = la.json().get("token", "")
-        if not t_admin:
-            print("\nLive-server mode needs an existing admin: set SELFTEST_ADMIN_EMAIL "
-                  "and SELFTEST_ADMIN_PASS (registrations pend on a populated DB).")
-            return 1
-        ah = {"Authorization": f"Bearer {t_admin}"}
-        r = cx.post(f"{BASE}/api/admin/users/{_uid_by_email(cx, ah, ALICE)}/approve", headers=ah)
-        check("admin approves alice", r.status_code == 200, r.text[:120])
-        t_alice = cx.post(f"{BASE}/api/auth/login", json={"email": ALICE, "password": PASS}).json()["token"]
-    auth_a = {"Authorization": f"Bearer {t_alice}"}
+    # 2. auth — bootstrap admin + registration approval flow. Registrations ALWAYS
+    # pend; the suite logs in as the bootstrap admin and approves its own users.
+    la = cx.post("/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASS})
+    check("admin login (bootstrap creds)", la.status_code == 200, la.text[:120])
+    t_admin = la.json().get("token", "")
+    if not t_admin:
+        print("\nNo admin credentials: set SELFTEST_ADMIN_USER / SELFTEST_ADMIN_PASS, "
+              "or run against a fresh server whose data/initial_admin_password is "
+              "readable from this checkout.")
+        return 1
+    ah = {"Authorization": f"Bearer {t_admin}"}
 
-    rbob = cx.post(f"{BASE}/api/auth/register", json={"email": BOB, "password": PASS}).json()
-    if "token" in rbob:
-        t_bob = rbob["token"]
-    else:
-        check("register bob pending", rbob.get("status") == "pending", str(rbob)[:120])
-        approver_token, approver_h = (t_admin, ah) if t_admin else (t_alice, auth_a)
-        r = cx.post(f"{BASE}/api/admin/users/{_uid_by_email(cx, approver_h, BOB)}/approve",
-                    headers=approver_h)
-        check("admin approves bob", r.status_code == 200, r.text[:120])
-        t_bob = cx.post(f"{BASE}/api/auth/login", json={"email": BOB, "password": PASS}).json()["token"]
+    def register_and_approve(username):
+        label = username.split("@")[0]
+        r = cx.post("/api/auth/register", json={"username": username, "password": PASS})
+        check(f"register {label} pending", r.status_code == 200
+              and r.json().get("status") == "pending", r.text[:120])
+        r = cx.post(f"{BASE}/api/admin/users/{_uid_by_name(cx, ah, username)}/approve",
+                    headers=ah)
+        check(f"admin approves {label}", r.status_code == 200, r.text[:120])
+        login = cx.post("/api/auth/login", json={"username": username, "password": PASS})
+        return login.json().get("token", "")
+
+    t_alice = register_and_approve(ALICE)
+    t_bob = register_and_approve(BOB)
+    auth_a = {"Authorization": f"Bearer {t_alice}"}
     auth_b = {"Authorization": f"Bearer {t_bob}"}
     check("register two users", t_alice and t_bob)
-    t_super = t_admin if t_admin else (t_alice if alice_is_admin else "")
-    auth_super = {"Authorization": f"Bearer {t_super}"}
+    t_super = t_admin
+    auth_super = ah
 
     # 1. good epub: embedded metadata wins
     r = upload(cx, t_alice, "whatever.epub", make_good_epub())
@@ -186,7 +188,7 @@ def main():
     check("FTS quoted query -> 200", r.status_code == 200, str(r.status_code))
 
     # 7. share -> auto-display on bob's shelf
-    cx.post(f"{BASE}/api/books/{b['id']}/share", json={"email": BOB},
+    cx.post(f"{BASE}/api/books/{b['id']}/share", json={"username": BOB},
             headers={"Authorization": f"Bearer {t_alice}"})
     bob_books = cx.get(f"{BASE}/api/books", headers={"Authorization": f"Bearer {t_bob}"}).json()
     shared = [x for x in bob_books if x["id"] == b["id"]]
@@ -233,6 +235,10 @@ def main():
         secret = Path(__file__).resolve().parent.parent / "data" / ".secret"
         mode = stat.S_IMODE(os.stat(secret).st_mode) if secret.exists() else None
         check("secret file 0600", mode == 0o600, "missing" if mode is None else oct(mode))
+        init_pw = Path(__file__).resolve().parent.parent / "data" / "initial_admin_password"
+        mode2 = stat.S_IMODE(os.stat(init_pw).st_mode) if init_pw.exists() else None
+        check("initial_admin_password 0600", mode2 is None or mode2 == 0o600,
+              "missing" if mode2 is None else oct(mode2))
 
     # 15. download queue: enqueue is idempotent; worker records failures with a
     # readable error; delete works. CI (no zlib CLI) must fail the job fast.
@@ -330,7 +336,7 @@ def main():
         r = cx.put("/api/admin/settings", headers=auth_super,
                    json={"values": {"ai.model": "glm-5.3-flash", "registration": "closed"}})
         check("settings PUT writes", r.status_code == 200, r.text[:120])
-        r = cx.post("/api/auth/register", json={"email": f"closed-{rand}@t.io", "password": PASS})
+        r = cx.post("/api/auth/register", json={"username": f"closed-{rand}@t.io", "password": PASS})
         check("closed registration rejects", r.status_code == 403, str(r.status_code))
         r = cx.put("/api/admin/settings", headers=auth_super,
                    json={"values": {"registration": "approval"}})

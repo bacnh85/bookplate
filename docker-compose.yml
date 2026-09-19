@@ -10,14 +10,12 @@ services:
                                    # (bind ./data:/app/data works too, but on Linux
                                    # pre-create it: mkdir -p data && chown 1000:1000 data)
     restart: unless-stopped
-    # optional provider keys (env replaces the dev .env.local):
+    # Everything (z-lib / Anna's Archive / AI keys, users) is configured in the
+    # web UI after first boot — no provider env needed. Only optional bootstrap:
     # environment:
-    #   ZAI_API_KEY: ...            # AI metadata fallback
-    #   ZLIB_EMAIL: ...             # Z-Library account (search/download)
-    #   ZLIB_PASSWORD: ...
-    #   ZLIB_DOMAIN: https://z-lib.gd   # optional; only if the default mirror rots
-    #   ANNAS_ARCHIVE_SECRET_KEY: ...   # Anna's Archive member key (search/download)
-    #   ANNAS_BASE_URL: https://annas-archive.gd   # optional; only if the mirror rots
+    #   BOOKPLATE_ADMIN_USER: admin   # default 'admin'
+    #   BOOKPLATE_ADMIN_PASS: ...     # else a password is generated and logged
+    #                                 # (docker logs) + saved to data/initial_admin_password
 
 volumes:
   bookplate-data:

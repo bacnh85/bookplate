@@ -8,7 +8,8 @@ One-time setup on the host:
   brew install heartleo/tap/zlib
   zlib login --eapi --email you@x --password ... --domain https://z-lib.gd
 Session persists in ~/.config/zlib. If a call fails because the session is missing
-or expired and ZLIB_EMAIL/ZLIB_PASSWORD are set (.env.local), this adapter re-logins
+or expired and zlib.email/zlib.password are configured (Admin → Settings), this
+adapter re-logins
 and retries once. NOTE: the CLI has no stdin/env password input, so the password
 transits argv for the duration of a login (ps-visible on multi-user hosts).
 """
@@ -89,7 +90,7 @@ class Zlib:
         """Fresh login, overwriting any stale session."""
         creds = self._creds()
         if not creds:
-            raise ZlibConfigError("Z-Library login needs ZLIB_EMAIL/ZLIB_PASSWORD")
+            raise ZlibConfigError("Z-Library account not configured — set it in Admin → Settings")
         domain = settings.get("zlib.domain", "https://z-lib.gd")
         rc, out, err = await self._run(
             "login", "--eapi", "--email", creds[0], "--password", creds[1],

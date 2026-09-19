@@ -11,7 +11,7 @@
 <section id="auth-view" hidden>
   <h1 class="wordmark">Bookplate<span>.</span></h1>
   <form id="auth-form">
-    <input type="email" id="auth-email" placeholder="Email" autocomplete="username" required>
+    <input type="text" id="auth-user" placeholder="Username" autocomplete="username" required>
     <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
     <div class="error-line" id="auth-error" role="alert"></div>
     <div class="result-sub" id="auth-ok" hidden>Account created — waiting for admin approval.</div>
@@ -30,7 +30,7 @@
     <span class="spacer"></span>
     <button class="btn-primary" id="upload-btn" type="button">Add books</button>
     <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
-    <span id="user-email" class="result-sub"></span>
+    <span id="user-name" class="result-sub"></span>
     <button class="btn-ghost" id="logout-btn" type="button">Sign out</button>
   </header>
 
@@ -65,7 +65,7 @@
 
       <section id="admin-users">
         <form id="admin-user-form" class="admin-row">
-          <input type="email" id="nu-email" placeholder="new.user@email" required>
+          <input type="text" id="nu-user" placeholder="username" required>
           <input type="password" id="nu-pass" placeholder="password" minlength="6" required>
           <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
           <button class="btn-primary" type="submit">Create</button>
@@ -76,17 +76,17 @@
       <section id="admin-settings" hidden>
         <form id="admin-settings-form">
           <h3>Z-Library account</h3>
-          <input type="email" id="set-zlib-email" placeholder="email (fallback ZLIB_EMAIL)">
-          <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password (fallback ZLIB_PASSWORD)" autocomplete="new-password">
+          <input type="email" id="set-zlib-email" placeholder="z-lib account email">
+          <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password" autocomplete="new-password">
             <button type="button" class="btn-ghost link" data-clear="zlib.password">clear</button></div>
           <input type="url" id="set-zlib-domain" placeholder="mirror, e.g. https://z-lib.gd">
           <h3>Anna's Archive</h3>
-          <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key (fallback ANNAS_ARCHIVE_SECRET_KEY)" autocomplete="new-password">
+          <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key" autocomplete="new-password">
             <button type="button" class="btn-ghost link" data-clear="annas.secret_key">clear</button></div>
           <input type="url" id="set-annas-base" placeholder="mirror, e.g. https://annas-archive.gd">
           <h3>AI metadata assist</h3>
           <label class="check-row"><input type="checkbox" id="set-ai-enabled"> enabled</label>
-          <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key (fallback ZAI_API_KEY)" autocomplete="new-password">
+          <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key" autocomplete="new-password">
             <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
           <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
           <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
@@ -118,7 +118,7 @@
 <dialog id="share-dialog">
   <form method="dialog">
     <h2>Share this book</h2>
-    <input type="email" id="share-email" placeholder="user@email" required>
+    <input type="text" id="share-user" placeholder="username" required>
     <div class="error-line" id="share-error"></div>
     <div style="display:flex; gap:8px; justify-content:flex-end">
       <button class="btn-ghost" value="cancel" type="submit">Cancel</button>

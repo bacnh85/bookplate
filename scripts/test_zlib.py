@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for the Z-Library adapter (CLI backend) — no network, no creds.
 
+Credentials come from app settings written into an isolated temp DB (never
+the developer's data/ebook.db).
+
 Run: .venv/bin/python scripts/test_zlib.py
 """
 import asyncio
@@ -14,6 +17,16 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+# isolated DB so test settings never touch a real data dir
+_TMP = pathlib.Path(tempfile.mkdtemp(prefix="bookplate-zlib-test-"))
+import app.db as _db  # noqa: E402
+
+_db.DATA_DIR = _TMP
+_db.DB_PATH = _TMP / "ebook.db"
+os.environ.setdefault("BOOKPLATE_ADMIN_PASS", "x")  # keep db.init() bootstrap quiet
+_db.init()
+from app import settings as _settings  # noqa: E402
+
 from app.zlib_client import Zlib, ZlibUnavailable
 
 
@@ -24,9 +37,8 @@ def run(coro):
 class ZlibTests(unittest.TestCase):
     def setUp(self):
         # keep the gate open and the real CLI out of the picture
-        env = mock.patch.dict(os.environ, {"ZLIB_EMAIL": "e@x", "ZLIB_PASSWORD": "p"})
-        env.start()
-        self.addCleanup(env.stop)
+        _settings.set("zlib.email", "e@x")
+        _settings.set("zlib.password", "p")
         which = mock.patch("app.zlib_client.shutil.which", return_value="/usr/bin/zlib")
         which.start()
         self.addCleanup(which.stop)

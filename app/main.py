@@ -45,44 +45,33 @@ TMP_DIR.mkdir(exist_ok=True)
 # ---------- auth ----------
 
 class Credentials(BaseModel):
-    email: str
+    username: str
     password: str
 
 
 @app.post("/api/auth/register")
-def register(c: Credentials, response: Response):
-    if not c.email or len(c.password) < 6:
-        raise HTTPException(400, "email and password (>=6 chars) required")
+def register(c: Credentials):
+    u = c.username.strip().lower()
+    if not u or len(c.password) < 6:
+        raise HTTPException(400, "username and password (>=6 chars) required")
+    if settings.get("registration", "approval") == "closed":
+        raise HTTPException(403, "registration is closed")
     with db.conn() as con:
-        first = con.execute("SELECT 1 FROM users").fetchone() is None
-        if not first and settings.get("registration", "approval") == "closed":
-            raise HTTPException(403, "registration is closed")
         try:
-            cur = con.execute(
-                "INSERT INTO users(email, password_hash, role, status) VALUES(?,?,?,?)",
-                (c.email.strip().lower(), hash_password(c.password),
-                 "admin" if first else "user",  # first user bootstraps the system
-                 "active" if first else "pending"))
+            con.execute(
+                "INSERT INTO users(username, password_hash, role, status) VALUES(?,?,?,?)",
+                (u, hash_password(c.password), "user", "pending"))
         except Exception:
-            raise HTTPException(409, "email already registered")
-        uid, active = cur.lastrowid, first
-        if first and con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] > 1:
-            # lost a bootstrap race (two registrations raced the empty table under
-            # WAL): fall back to the normal approval path — only ONE first admin
-            con.execute("UPDATE users SET role='user', status='pending' WHERE id=?", (uid,))
-            active = False
-    if not active:  # pending: no token until an admin approves
-        return {"status": "pending"}
-    token = make_token(uid)
-    _set_session(response, token)
-    return {"status": "active", "token": token}
+            raise HTTPException(409, "username already registered")
+    return {"status": "pending"}  # an admin approves before first login
 
 
 @app.post("/api/auth/login")
 def login(c: Credentials, response: Response):
     with db.conn() as con:
         row = con.execute(
-            "SELECT * FROM users WHERE email=?", (c.email.strip().lower(),)).fetchone()
+            "SELECT * FROM users WHERE username=?",
+            (c.username.strip().lower(),)).fetchone()
     if not row or not verify_password(c.password, row["password_hash"]):
         raise HTTPException(401, "invalid credentials")
     if row["status"] == "pending":
@@ -102,7 +91,7 @@ def _set_session(response: Response, token: str) -> None:
 
 @app.get("/api/me")
 def me(user=UserDep):
-    return {"id": user["id"], "email": user["email"],
+    return {"id": user["id"], "username": user["username"],
             "role": user["role"], "status": user["status"]}
 
 
@@ -133,7 +122,7 @@ def _book_visible(con, user_id: int, book_id: int):
 def list_books(q: str = "", user=UserDep):
     sql = """SELECT b.*, EXISTS(SELECT 1 FROM user_books ub
                  WHERE ub.user_id=:uid AND ub.book_id=b.id) AS own,
-             (SELECT u.email FROM shares s JOIN users u ON u.id=s.from_user
+             (SELECT u.username FROM shares s JOIN users u ON u.id=s.from_user
                  WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by
              FROM books b WHERE b.id IN (
                SELECT book_id FROM user_books WHERE user_id=:uid
@@ -285,7 +274,7 @@ def remove_book(book_id: int, user=UserDep):
 
 
 class ShareReq(BaseModel):
-    email: str
+    username: str
 
 
 @app.post("/api/books/{book_id}/share")
@@ -294,10 +283,10 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
         if not con.execute("SELECT 1 FROM user_books WHERE user_id=? AND book_id=?",
                            (user["id"], book_id)).fetchone():
             _raise404()
-        to = con.execute("SELECT id FROM users WHERE email=?",
-                         (req.email.strip().lower(),)).fetchone()
+        to = con.execute("SELECT id FROM users WHERE username=?",
+                         (req.username.strip().lower(),)).fetchone()
         if not to:
-            raise HTTPException(404, f"no user {req.email}")
+            raise HTTPException(404, f"no user {req.username}")
         con.execute("INSERT OR IGNORE INTO shares(book_id, from_user, to_user) VALUES(?,?,?)",
                     (book_id, user["id"], to["id"]))
     return {"ok": True}
@@ -433,7 +422,7 @@ def annas_queue_remove(job_id: int, user=UserDep):
 # ---------- admin: user management ----------
 
 class AdminUserReq(BaseModel):
-    email: str
+    username: str
     password: str
     role: str = "user"
 
@@ -456,25 +445,26 @@ def _active_admin_others(con, uid: int) -> int:
 def admin_users(admin=AdminDep):
     with db.conn() as con:
         return [dict(r) for r in con.execute(
-            """SELECT u.id, u.email, u.role, u.status, u.created_at,
+            """SELECT u.id, u.username, u.role, u.status, u.created_at,
                (SELECT COUNT(*) FROM user_books ub WHERE ub.user_id=u.id) AS books
                FROM users u ORDER BY u.id""")]
 
 
 @app.post("/api/admin/users")
 def admin_create_user(req: AdminUserReq, admin=AdminDep):
-    if not req.email or len(req.password) < 6:
-        raise HTTPException(400, "email and password (>=6 chars) required")
+    u = req.username.strip().lower()
+    if not u or len(req.password) < 6:
+        raise HTTPException(400, "username and password (>=6 chars) required")
     if req.role not in ("user", "admin"):
         raise HTTPException(400, "role must be user or admin")
     with db.conn() as con:
         try:
             cur = con.execute(
-                "INSERT INTO users(email, password_hash, role, status) VALUES(?,?,?,'active')",
-                (req.email.strip().lower(), hash_password(req.password), req.role))
+                "INSERT INTO users(username, password_hash, role, status) VALUES(?,?,?,'active')",
+                (u, hash_password(req.password), req.role))
         except Exception:
-            raise HTTPException(409, "email already registered")
-        row = con.execute("SELECT id, email, role, status FROM users WHERE id=?",
+            raise HTTPException(409, "username already registered")
+        row = con.execute("SELECT id, username, role, status FROM users WHERE id=?",
                           (cur.lastrowid,)).fetchone()
     return dict(row)
 
@@ -544,10 +534,9 @@ def _mask(v: str) -> dict:
 @app.get("/api/admin/settings")
 def admin_get_settings(admin=AdminDep):
     out = {}
-    for key in settings.ENV_FALLBACK:
-        v = settings.get(key)
+    for key in settings.KEYS:
+        v = settings.get(key, "approval" if key == "registration" else "")
         out[key] = _mask(v) if key in SECRET_SETTINGS else v
-    out["registration"] = settings.get("registration", "approval")
     return out
 
 
@@ -558,7 +547,7 @@ class SettingsReq(BaseModel):
 @app.put("/api/admin/settings")
 def admin_put_settings(req: SettingsReq, admin=AdminDep):
     for k, v in req.values.items():
-        if k not in settings.ENV_FALLBACK and k != "registration":
+        if k not in settings.KEYS:
             raise HTTPException(400, f"unknown setting {k}")
         if k == "registration" and v not in ("approval", "closed"):
             raise HTTPException(400, "registration must be 'approval' or 'closed'")

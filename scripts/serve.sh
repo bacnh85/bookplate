@@ -5,11 +5,12 @@
 # uses HTTP basic auth, so credentials cross the network in cleartext; fine for
 # a trusted home LAN, use a TLS reverse proxy for anything wider.
 cd "$(dirname "$0")/.." || exit 1
-# load optional provider keys (ZLIB_*, ZAI_*) from the gitignored .env.local
-[ -f .env.local ] && { set -a; . ./.env.local; set +a; }
 UV=".venv/bin/uvicorn"
 HOST="${HOST:-127.0.0.1}"
 LOG="data/server.log"
+umask 077                                # log/pid files 0600 — the first-boot
+                                         # banner (and uvicorn errors) can carry creds
+chmod 600 "$LOG" "$LOG.1" 2>/dev/null    # pre-existing files may be world-readable
 if [ ! -x "$UV" ]; then
   echo "serve.sh: $UV not found — run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
   exit 1

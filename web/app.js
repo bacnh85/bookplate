@@ -77,7 +77,7 @@ $("#auth-form").onsubmit = async (e) => {
     const fn = registerMode ? "/api/auth/register" : "/api/auth/login";
     const res = await api(fn, {
       method: "POST",
-      json: { email: $("#auth-email").value, password: $("#auth-pass").value },
+      json: { username: $("#auth-user").value, password: $("#auth-pass").value },
     });
     if (res.status === "pending") {  // registered, awaiting approval — no token yet
       $("#auth-ok").hidden = false;
@@ -240,12 +240,12 @@ let shareBookId = null;
 function shareBook(b) {
   shareBookId = b.id;
   $("#share-error").textContent = "";
-  $("#share-email").value = "";
+  $("#share-user").value = "";
   $("#share-dialog").showModal();
 }
 $("#share-ok").onclick = async () => {
   try {
-    await api(`/api/books/${shareBookId}/share`, { method: "POST", json: { email: $("#share-email").value } });
+    await api(`/api/books/${shareBookId}/share`, { method: "POST", json: { username: $("#share-user").value } });
     $("#share-dialog").close();
   } catch (err) { $("#share-error").textContent = err.message; }
 };
@@ -583,7 +583,7 @@ async function boot() {
   $("#app-view").hidden = false;
   try {
     const me = await api("/api/me");
-    $("#user-email").textContent = me.email;
+    $("#user-name").textContent = me.username;
     $("#tab-admin").hidden = me.role !== "admin";
     me_id = me.id;
     loadShelf();
@@ -626,7 +626,7 @@ async function loadAdminUsers() {
     const row = document.createElement("div");
     row.className = "admin-row";
     row.innerHTML = `
-      <div class="au-email">${esc(u.email)}</div>
+      <div class="au-email">${esc(u.username)}</div>
       <span class="badge">${esc(u.role)}</span>
       <span class="badge ${u.status === "active" ? "" : u.status === "disabled" ? "badge-danger" : "badge-warn"}">${esc(u.status)}</span>
       <span class="result-sub">${u.books} books</span>
@@ -647,7 +647,7 @@ async function loadAdminUsers() {
         api(`/api/admin/users/${u.id}/set-role`, { method: "POST", json: { role: u.role === "admin" ? "user" : "admin" } }));
       act("Disable", () => api(`/api/admin/users/${u.id}/disable`, { method: "POST" }));
       act("Reset PW", async () => {
-        const pw = prompt(`New password for ${u.email} (min 6 chars)`);
+        const pw = prompt(`New password for ${u.username} (min 6 chars)`);
         if (pw) await api(`/api/admin/users/${u.id}/reset-password`, { method: "POST", json: { password: pw } });
       });
     }
@@ -660,8 +660,8 @@ $("#admin-user-form").onsubmit = async (e) => {
   e.preventDefault();
   try {
     await api("/api/admin/users", { method: "POST", json: {
-      email: $("#nu-email").value, password: $("#nu-pass").value, role: $("#nu-role").value } });
-    $("#nu-email").value = ""; $("#nu-pass").value = "";
+      username: $("#nu-user").value, password: $("#nu-pass").value, role: $("#nu-role").value } });
+    $("#nu-user").value = ""; $("#nu-pass").value = "";
     loadAdminUsers();
   } catch (err) { adminFail(err); }
 };
@@ -693,8 +693,8 @@ async function loadAdminSettings() {
   $("#set-ai-enabled").checked = s["ai.enabled"] !== "0";
   for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
     const v = s[key];
-    $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("zlib") ? "password (fallback ZLIB_PASSWORD)"
-      : sel.includes("annas") ? "secret key (fallback ANNAS_ARCHIVE_SECRET_KEY)" : "API key (fallback ZAI_API_KEY)";
+    $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("zlib") ? "password"
+      : sel.includes("annas") ? "secret key" : "API key";
     $(sel).value = "";
   }
   clearFlags.clear();
@@ -716,7 +716,7 @@ $("#admin-settings-form").onsubmit = async (e) => {
   for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
     const v = $(sel).value;
     if (v) values[key] = v;                 // typed replacement
-    else if (clearFlags.has(key)) values[key] = "";  // explicit clear -> env fallback
+    else if (clearFlags.has(key)) values[key] = "";  // explicit clear -> empty value
     // else: leave untouched
   }
   try { await api("/api/admin/settings", { method: "PUT", json: { values } }); loadAdminSettings(); }

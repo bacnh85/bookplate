@@ -45,9 +45,11 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   See progress per job; retry or cancel from the UI.
 
 **Users & admin**
-- Multi-user with roles: **admin** and **user**.
-- **First registered account becomes the admin**; `ADMIN_EMAIL` env overrides which
-  account is promoted.
+- Multi-user with roles: **admin** and **user**. Login is **username + password**.
+- **First boot creates the admin account**: username from `BOOKPLATE_ADMIN_USER`
+  (default `admin`), password from `BOOKPLATE_ADMIN_PASS` — or generated, printed
+  once to the container log and saved to `data/initial_admin_password` (delete it
+  after first login).
 - **Registration control**: open-with-approval (default) or closed. Pending accounts
   can't sign in until an admin approves them in **Admin → Users**.
 - Admin can create accounts, approve/enable/disable, change roles, reset passwords.
@@ -58,9 +60,11 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 **Admin panel** (in-app, admin only)
 - **Users**: create, approve, enable/disable, set role, reset password.
-- **Settings** (DB-backed, env fallback): Z-Library account + mirror, Anna's Archive
+- **Settings** (DB-backed, configured entirely in the UI): Z-Library account + mirror,
+  Anna's Archive
   key + mirror, AI assist (enable/key/base/model), registration mode. Secrets are
-  stored in the database (same trust boundary as `.env.local`) and masked in the API.
+  stored in the database (same on-disk trust boundary the old `.env.local` had) and
+  masked in the API.
 - **Z-Library**: daily quota, the account's **download history** (one-click re-queue),
   and the account's **saved books** (My library). Booklists are not exposed by
   z-lib's API and show as unavailable.
@@ -111,33 +115,31 @@ container crash-loops.
 
 ### Configuration
 
-Configuration lives in **Admin → Settings** (app-managed, stored in `data/ebook.db`) and
-falls back to the env vars below when a field is empty — so env-only deployments keep
-working, and a value saved in the UI takes over until cleared (the UI's "clear" link
-reverts to env). Secrets are masked in reads and never echoed back.
+Everything is configured in the app — **no provider env vars, no `.env.local`**.
+After first boot, sign in as the admin and set the Z-Library account, Anna's Archive
+key and AI key under **Admin → Settings**. Values live in `data/ebook.db` (masked in
+reads, never echoed back; the "clear" link empties a field).
 
-Optional env keys (seeding/fallback):
+The only optional env keys are the admin bootstrap (see below) and the infra-level
+`BOOKPLATE_DATA_DIR` (where the data volume is mounted).
 
-- `ADMIN_EMAIL` — on startup, promote this account to admin (after the auto-promotion
-  rule below picks the earliest active account).
-- `ZAI_API_KEY` (+ optional `ZAI_BASE_URL` / `ZAI_MODEL`) — AI metadata fallback.
-  `ZAI_ENABLED=0` (or the Settings toggle) turns it off.
-- `ZLIB_EMAIL` / `ZLIB_PASSWORD` — Z-Library search/download. The `zlib` CLI is baked
-  into the image; with credentials set it auto-logs-in on demand and re-logins if a
-  session expires (the session is per-container and re-establishes after restarts).
-  Mirror rotting? Set `ZLIB_DOMAIN` (`zlib doctor --eapi` lists healthy mirrors).
-- `ANNAS_ARCHIVE_SECRET_KEY` — Anna's Archive search/download. This is the member
-  secret key from your AA account page; it both authenticates the site (search) and
-  authorizes fast downloads. Mirror rotting? Set `ANNAS_BASE_URL`
-  (default `https://annas-archive.gd`). See the Anna's Archive section below.
+### First boot & admin bootstrap
 
-### Users, roles & admin bootstrap
+On an **empty** users table the app creates the admin account itself:
 
-- The **first account ever created becomes the admin** — on a fresh system just
-  register through the normal form.
-- On upgrade, if no admin exists, the **earliest active account** is promoted at
-  startup; `ADMIN_EMAIL` overrides that choice. Accounts disabled before the upgrade
-  are never promoted.
+- `BOOKPLATE_ADMIN_USER` — username (default `admin`).
+- `BOOKPLATE_ADMIN_PASS` — password. If unset, one is **generated**: printed once to
+  the container log (`docker logs bookplate`) and saved to
+  `data/initial_admin_password` (mode 0600). Read it, sign in, then delete the file.
+
+Bootstrap runs only while the users table is empty — it never touches existing
+accounts. Already deployed? Existing users keep working; the column rename
+(`email` → `username`) is automatic and email-shaped usernames keep working.
+Legacy provider env vars (`ZLIB_*`, `ANNAS_*`, `ZAI_*`) are imported into the
+settings table **once** on the first boot after upgrading (only keys never set
+in the UI); after that env is ignored entirely.
+
+### Users, roles & registration
 - Registration defaults to **approval required**: new signups land as *pending*, can't
   log in, and appear in Admin → Users for approval. Admin → Settings can switch
   registration to **closed**.
@@ -187,22 +189,20 @@ reverse proxy (e.g. Caddy) for anything wider.
 
 All state lives in `data/` (gitignored): `ebook.db` (+WAL), content-addressed
 `books/`, `covers/`, `tmp/`. To migrate to a remote server later, Docker-mount
-this one folder as a volume — nothing else needs copying. `.env.local` is
-gitignored too; recreate provider keys there on the target host.
+this one folder as a volume — nothing else needs copying.
 
-## Optional env (`.env.local` — loaded by `serve.sh` at startup)
+### Optional env
 
 | Var | Purpose |
 |---|---|
-| `ZLIB_EMAIL` / `ZLIB_PASSWORD` | Your Z-Library account — used to auto-login the `zlib` CLI when no session exists or one expires |
-| `ZLIB_DOMAIN` | Override the auto-login mirror (default `https://z-lib.gd`); check healthy mirrors with `zlib doctor --eapi` |
-| `ANNAS_ARCHIVE_SECRET_KEY` | Your Anna's Archive account secret key (account page) — required for both search and download |
-| `ANNAS_BASE_URL` | Override the Anna's Archive mirror (default `https://annas-archive.gd`) |
-| `ZAI_API_KEY` | AI metadata fallback for garbage files (any OpenAI-compatible provider) |
-| `ZAI_BASE_URL` / `ZAI_MODEL` | Defaults: `https://api.z.ai/api/openai/v1`, `glm-5.3-flash` |
+| `BOOKPLATE_ADMIN_USER` | Bootstrap admin username (default `admin`) — only used while the users table is empty |
+| `BOOKPLATE_ADMIN_PASS` | Bootstrap admin password — if unset, generated (logged + `data/initial_admin_password`) |
+| `BOOKPLATE_DATA_DIR` | Data directory override (tests, non-default volume mounts) |
 
-Z-Library uses the `zlib` CLI (EAPI mobile-app API, auto-solves the DiamWall
-proof-of-work that walls raw HTTP clients). One-time setup:
+Z-Library / Anna's Archive / AI keys are set in **Admin → Settings** after first
+login, no restart needed. Z-Library uses the `zlib` CLI (EAPI mobile-app API,
+auto-solves the DiamWall proof-of-work that walls raw HTTP clients); the app
+auto-logins from the configured account and re-logins when a session expires.
 
 ```bash
 brew install heartleo/tap/zlib
@@ -227,8 +227,8 @@ Downloads work with OR without a membership:
 
 Practical notes:
 
-- The secret key authenticates search; it is stored in **Admin → Settings** (or
-  the `ANNAS_ARCHIVE_SECRET_KEY` env fallback), never in git; the derived session
+- The secret key authenticates search; it is stored in **Admin → Settings**, never
+  in git; the derived session
   cookie is kept in server RAM only.
 - DDoS-Guard decisions are per-IP: if your server's IP is flagged, search (and
   the slow-download pages) get a bot check the server can't pass. Fix: open the
@@ -237,8 +237,7 @@ Practical notes:
 - AA rotates domains; if the default mirror dies, point `ANNAS_BASE_URL` at a
   current one (mirrors are listed on the AA site/FAQ).
 
-Add keys via **Admin → Settings** (or `.env.local` for local dev), no restart
-needed for settings saved in the UI.
+Add keys via **Admin → Settings** — no restart needed.
 
 ## Test
 
@@ -249,22 +248,24 @@ needed for settings saved in the UI.
 .venv/bin/python scripts/test_annas.py    # Anna's Archive adapter (offline)
 ```
 
-The e2e suite runs two ways: on a **fresh database** (CI) the first registered
-user is the admin and the suite approves its own second user; on a **populated
-server** set `SELFTEST_ADMIN_EMAIL` / `SELFTEST_ADMIN_PASS` to an existing admin
-so the suite can approve its test users.
+The e2e suite runs two ways: on a **fresh database** (CI) it signs in with the
+bootstrap admin (pass `BOOKPLATE_ADMIN_PASS` to the container, or let the runner
+read `data/initial_admin_password`); on a **populated
+server** set `SELFTEST_ADMIN_USER` / `SELFTEST_ADMIN_PASS` to an existing admin
+so the suite can approve its test users. In both modes registrations land as
+*pending* and the suite approves them via the admin API.
 
 ## iPhone / iPad
 
 - Browser: works in Safari (reader, upload, search).
 - Native reader apps (KyBook 3, MapleRead, Yomu): add OPDS catalog
-  `http://<host>:8480/opds` with your email + password (HTTP basic auth —
+  `http://<host>:8480/opds` with your username + password (HTTP basic auth —
   cleartext over plain HTTP, see the warning above).
 
 ## Layout
 
 - `app/` — FastAPI: `db.py` (SQLite+FTS5, migrations), `auth.py` (JWT + roles),
-  `settings.py` (DB-backed settings with env fallback), `storage.py` (SHA-256 store),
+  `settings.py` (DB-backed settings), `storage.py` (SHA-256 store),
   `metadata.py` (extraction chain), `ai.py`, `zlib_client.py`, `zlib_eapi.py`
   (z-lib admin: history/library), `annas_client.py`,
   `webfetch.py` (SSRF-pinned fetches), `opds.py`, `main.py`

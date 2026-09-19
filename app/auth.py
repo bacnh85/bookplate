@@ -73,10 +73,12 @@ def _user_from_basic(request: Request):
     if not header.startswith("Basic "):
         return None
     try:
-        email, _, pw = base64.b64decode(header[6:]).decode().partition(":")
+        user, _, pw = base64.b64decode(header[6:]).decode().partition(":")
     except Exception:
         return None
-    row = conn().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    # same normalization as the JSON login path: OPDS clients may send any case
+    row = conn().execute("SELECT * FROM users WHERE username=?",
+                         (user.strip().lower(),)).fetchone()
     if row and verify_password(pw, row["password_hash"]):
         _reject_inactive(row)
         return row

@@ -3,6 +3,9 @@
 (the fixture in scripts/fixtures/ is real search HTML; see
 scripts/fetch_annas_fixture.py for how to refresh it).
 
+Credentials come from app settings written into an isolated temp DB (never
+the developer's data/ebook.db).
+
 Run: .venv/bin/python scripts/test_annas.py
 """
 import asyncio
@@ -19,6 +22,16 @@ from unittest import mock
 import httpx
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
+# isolated DB so test settings never touch a real data dir
+_TMP = pathlib.Path(tempfile.mkdtemp(prefix="bookplate-annas-test-"))
+import app.db as _db  # noqa: E402
+
+_db.DATA_DIR = _TMP
+_db.DB_PATH = _TMP / "ebook.db"
+os.environ.setdefault("BOOKPLATE_ADMIN_PASS", "x")  # keep db.init() bootstrap quiet
+_db.init()
+from app import settings as _settings  # noqa: E402
 
 from app.annas_client import (Annas, AnnasConfigError, AnnasUnavailable,
                               _ext_from_meta, _is_challenge, _slow_page_info,
@@ -158,20 +171,18 @@ class ChallengeTests(unittest.TestCase):
 
 class LoginTests(unittest.TestCase):
     def setUp(self):
-        env = mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": "testkey"})
-        env.start()
-        self.addCleanup(env.stop)
+        _settings.set("annas.secret_key", "testkey")
         self.annas = Annas()  # fresh instance: no cached cookie
 
     def test_enabled_gates_on_key(self):
         self.assertTrue(self.annas.enabled)
-        with mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": ""}):
-            self.assertFalse(Annas().enabled)
+        _settings.set("annas.secret_key", "")
+        self.assertFalse(Annas().enabled)
 
     def test_missing_key_is_config_error(self):
-        with mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": ""}):
-            with self.assertRaises(AnnasConfigError):
-                run(self.annas._login())
+        _settings.set("annas.secret_key", "")
+        with self.assertRaises(AnnasConfigError):
+            run(self.annas._login())
 
     def test_bad_key_rejected_without_cookie(self):
         with with_client([resp(200, text="<form>login page</form>")]):
@@ -211,9 +222,7 @@ class LoginTests(unittest.TestCase):
 
 class SearchTests(unittest.TestCase):
     def setUp(self):
-        env = mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": "testkey"})
-        env.start()
-        self.addCleanup(env.stop)
+        _settings.set("annas.secret_key", "testkey")
         self.annas = Annas()
 
     def test_search_parses_fixture(self):
@@ -278,9 +287,7 @@ class SearchTests(unittest.TestCase):
 
 class DownloadTests(unittest.TestCase):
     def setUp(self):
-        env = mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": "testkey"})
-        env.start()
-        self.addCleanup(env.stop)
+        _settings.set("annas.secret_key", "testkey")
         self.annas = Annas()
 
     def test_happy_path(self):
@@ -354,9 +361,7 @@ class DownloadTests(unittest.TestCase):
 
 class SlowDownloadTests(unittest.TestCase):
     def setUp(self):
-        env = mock.patch.dict(os.environ, {"ANNAS_ARCHIVE_SECRET_KEY": "testkey"})
-        env.start()
-        self.addCleanup(env.stop)
+        _settings.set("annas.secret_key", "testkey")
         self.annas = Annas()
 
     READY = ('<p class="mb-4 text-xl font-bold">\n'
@@ -460,9 +465,9 @@ class MainWiringTests(unittest.TestCase):
         import app.main as main  # db.init() now lands in the temp DB
         cls.main = main
         with db.conn() as c:
-            c.execute("INSERT OR IGNORE INTO users(id, email, password_hash) "
+            c.execute("INSERT OR IGNORE INTO users(id, username, password_hash) "
                       "VALUES(424242, 'wire@t.io', 'x')")
-        cls.user = {"id": 424242, "email": "wire@t.io"}
+        cls.user = {"id": 424242, "username": "wire@t.io"}
 
     @classmethod
     def tearDownClass(cls):

@@ -1,5 +1,6 @@
 """SQLite (WAL) + FTS5 external-content index."""
 import os
+import secrets
 import sqlite3
 from pathlib import Path
 
@@ -9,7 +10,7 @@ DB_PATH = DATA_DIR / "ebook.db"
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   id INTEGER PRIMARY KEY,
-  email TEXT UNIQUE NOT NULL,
+  username TEXT UNIQUE NOT NULL COLLATE NOCASE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'user',
   status TEXT NOT NULL DEFAULT 'active',
@@ -126,22 +127,50 @@ def init() -> None:
         if "source" not in cols:
             c.execute("ALTER TABLE download_jobs ADD COLUMN source TEXT NOT NULL DEFAULT 'zlibrary'")
         ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+        if "email" in ucols and "username" not in ucols:
+            c.execute("ALTER TABLE users RENAME COLUMN email TO username")
+            ucols = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
         if "role" not in ucols:
             c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
         if "status" not in ucols:
             c.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
         # at-least-one-admin invariant: an upgraded DB (everyone role='user') with
         # registration defaulting to 'approval' would deadlock — nobody could approve
-        # or reach /api/admin/*. Promote the earliest ACTIVE account, then ADMIN_EMAIL
-        # override. (Debris accounts left disabled can never be promoted.)
+        # or reach /api/admin/*. Promote the earliest ACTIVE account. (Debris
+        # accounts left disabled can never be promoted.)
         if not c.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
             if c.execute("SELECT 1 FROM users WHERE status='active'").fetchone():
                 c.execute("UPDATE users SET role='admin' "
                           "WHERE id=(SELECT MIN(id) FROM users WHERE status='active')")
-        admin_email = os.getenv("ADMIN_EMAIL", "").strip().lower()
-        if admin_email:
-            # active accounts only: a disabled ADMIN_EMAIL must never be revived,
-            # and a deliberately demoted account stays demoted (the earliest-active
-            # promotion above already ran if no admin exists)
-            c.execute("UPDATE users SET role='admin' WHERE email=? AND status='active'",
-                      (admin_email,))
+        _bootstrap_admin(c)
+        from . import settings as _settings  # lazy: settings imports db.conn
+        _settings.seed_legacy_env(c)
+
+
+def _bootstrap_admin(c: sqlite3.Connection) -> None:
+    """First boot on an empty DB: create the admin account. Password comes from
+    BOOKPLATE_ADMIN_PASS, else generated (logged once + saved to a 0600 file).
+    Runs only when the users table is empty — never touches existing accounts."""
+    from .auth import hash_password  # lazy: auth imports db
+    if c.execute("SELECT 1 FROM users").fetchone():
+        return
+    user = os.getenv("BOOKPLATE_ADMIN_USER", "admin").strip().lower() or "admin"
+    pw = os.getenv("BOOKPLATE_ADMIN_PASS", "")
+    generated = not pw
+    if generated:
+        pw = secrets.token_urlsafe(12)
+    try:
+        c.execute("INSERT INTO users(username, password_hash, role, status) VALUES(?,?,?,?)",
+                  (user, hash_password(pw), "admin", "active"))
+    except sqlite3.IntegrityError:
+        return  # racing boot — the other process created it
+    if generated:
+        f = DATA_DIR / "initial_admin_password"
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(pw + "\n")
+        print(f"\n=== Bookplate first boot: created admin user '{user}' ===\n"
+              f"    password: {pw}\n"
+              f"    (also saved to {f} — delete it after first login)", flush=True)
+    else:
+        print(f"bookplate: bootstrap admin '{user}' created (BOOKPLATE_ADMIN_PASS)", flush=True)

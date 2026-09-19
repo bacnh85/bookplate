@@ -18,7 +18,7 @@ jobs:
       - name: Build (amd64)
         run: docker build -t bookplate:test .
       - name: Start container
-        run: docker run -d -p 8480:8480 --name bookplate bookplate:test
+        run: docker run -d -p 8480:8480 -e BOOKPLATE_ADMIN_PASS=ci-admin-pass --name bookplate bookplate:test
       - name: Wait for server
         run: |
           for i in $(seq 1 30); do
@@ -31,6 +31,9 @@ jobs:
         with:
           python-version: '3.14'
       - name: Run e2e selftest against the container
+        env:
+          SELFTEST_ADMIN_USER: admin
+          SELFTEST_ADMIN_PASS: ci-admin-pass
         run: |
           pip install -r requirements.txt
           python scripts/selftest.py http://localhost:8480
