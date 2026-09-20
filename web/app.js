@@ -647,6 +647,8 @@ async function boot() {
       .forEach((b) => { b.hidden = me_role !== "admin"; });
     me_kindle = !!me.kindle;
     me_devices = me.devices || [];
+    // devices but no send button => admin SMTP missing; say why instead of a dead-end
+    $("#smtp-hint").hidden = !(me_devices.length && !me_kindle);
     me_id = me.id;
     loadShelf();
     refreshQueue();  // badge + resume polling if jobs are active

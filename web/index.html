@@ -71,6 +71,7 @@
           <button class="btn-primary" type="submit">Add</button>
         </form>
         <div id="device-list" class="admin-table"></div>
+        <p class="result-sub" id="smtp-hint" hidden>Sending is disabled until the admin configures the SMTP gateway (App settings → Send to Kindle).</p>
         <p class="result-sub">Devices are yours alone. Add the server's sender email to your Amazon account's "Approved Personal Document E-mail List" — find it in App settings if you're an admin, or ask the admin for it.</p>
       </section>
 
@@ -201,6 +202,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=4"></script>
+<script type="module" src="/app.js?v=5"></script>
 </body>
 </html>
