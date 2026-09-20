@@ -123,8 +123,8 @@ def kindle_devices(user=UserDep):
 @app.post("/api/kindle/devices")
 def kindle_device_add(req: DeviceReq, user=UserDep):
     email = req.email.strip()
-    if not EMAIL_RE.match(email):
-        raise HTTPException(400, "enter a valid email address")
+    if not EMAIL_RE.match(email) or not email.lower().endswith("@kindle.com"):
+        raise HTTPException(400, "enter your Kindle address (ends in @kindle.com)")
     label = req.label.strip() or email
     with db.conn() as con:
         try:

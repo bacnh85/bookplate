@@ -275,7 +275,7 @@ async function sendToKindle(btn, b) {
   if (me_devices.length > 1) { renderKindleDialog(b); return; }
   btn.disabled = true;
   btn.textContent = "Sending…";
-  if (await doKindleSend(b, me_devices[0])) {
+  if (await doKindleSend(b, me_devices[0], (m) => alert(`Send failed: ${m}`))) {
     btn.textContent = "Sent ✓";
     setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 4000);
   } else {
