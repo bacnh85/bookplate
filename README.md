@@ -5,9 +5,11 @@ in-browser reading, z-library search/download (optional), Anna's Archive
 search/download (optional, member key), user-to-user sharing,
 OPDS for iOS reader apps, AI metadata fallback (optional).
 
-![My shelf](docs/images/home.png)
+![Home — library stats and recently added](docs/images/home.png)
 
-![Find books — Z-Library search](docs/images/find-books.png)
+![Library — cover tiles with the ⋯ context menu](docs/images/library.png)
+
+![Book Store — source status cards and Z-Library search](docs/images/book-store.png)
 
 ![Book detail with description and related books](docs/images/book-detail.png)
 
@@ -290,6 +292,8 @@ so the suite can approve its test users. In both modes registrations land as
   (z-lib admin: history/library), `annas_client.py`,
   `webfetch.py` (SSRF-pinned fetches), `opds.py`, `main.py`
 - `web/` — vanilla JS SPA + vendored `foliate-js` (no build step)
-- `scripts/` — `serve.sh` (local keepalive server), e2e + unit test suites
+- `scripts/` — `serve.sh` (local keepalive server), e2e + unit test suites,
+  `capture_shots.py` (regenerates the README screenshots above; needs a running
+  server + local Chrome)
 - `docs/images/` — README screenshots
 - `data/` — SQLite DB, content-addressed book files, covers (gitignored)
