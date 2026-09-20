@@ -1,8 +1,9 @@
-"""Send to Kindle: email the book file to the Kindle address via SMTP.
+"""Send to Kindle: email the book file to a Kindle address via SMTP.
 
 Amazon's email gateway converts/delivers EPUB+PDF attachments sent from an
 approved sender to the account's @kindle.com address — the same mechanism
-Calibre uses. Config lives in the DB-only settings (kindle.* keys).
+Calibre uses. SMTP transport (host/port/from) is admin-configured; the
+destination addresses are per-user kindle_devices rows.
 """
 import re
 import smtplib
@@ -23,8 +24,8 @@ class KindleError(Exception):
     """User-facing failure (config or SMTP); surfaced verbatim via HTTP 502."""
 
 
-def configured() -> bool:
-    return bool(settings.get("kindle.to") and settings.get("kindle.smtp_host"))
+def smtp_ready() -> bool:
+    return bool(settings.get("kindle.smtp_host"))
 
 
 def _ascii_name(title: str, authors: str, ext: str) -> str:
@@ -36,11 +37,10 @@ def _ascii_name(title: str, authors: str, ext: str) -> str:
     return (re.sub(r"\s+", " ", s).strip().strip("-") or "book") + f".{ext}"
 
 
-def send(path: Path, title: str, authors: str) -> None:
-    to = settings.get("kindle.to")
+def send(path: Path, title: str, authors: str, to: str) -> None:
     host = settings.get("kindle.smtp_host")
-    if not (to and host):
-        raise KindleError("Kindle delivery is not configured (Admin → Settings)")
+    if not host:
+        raise KindleError("Kindle delivery is not configured (ask the admin to set up SMTP)")
     ext = path.suffix.lstrip(".").lower()
     if ext not in SENDEXTS:
         raise KindleError(f"Kindle accepts only EPUB and PDF (got {ext.upper()}) — "

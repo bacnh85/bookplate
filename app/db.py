@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS download_jobs(
   updated_at TEXT DEFAULT (datetime('now')),
   UNIQUE(user_id, zlib_id)
 );
+CREATE TABLE IF NOT EXISTS kindle_devices(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(user_id, email)
+);
 CREATE TABLE IF NOT EXISTS shares(
   id INTEGER PRIMARY KEY,
   book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,

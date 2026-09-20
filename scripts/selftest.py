@@ -358,52 +358,90 @@ def main():
                    json={"values": {"not.a.key": "x"}})
         check("settings PUT rejects unknown key", r.status_code == 400, str(r.status_code))
 
-        # 15d. send-to-kindle: config gating + readable SMTP failure, fully
+        # 15d. send-to-kindle: per-user device CRUD, config gating + readable
+        # SMTP failure, fully
         # hermetic — the configured host is 127.0.0.1:1 (instant refusal), so
         # no real mail is sent anywhere. SKIPPED on a server that already has
         # kindle configured: the probes must not wipe saved SMTP credentials
         # (secrets are masked and can never be read back to restore).
-        kindle_keys = ["kindle.to", "kindle.from", "kindle.smtp_host", "kindle.smtp_port",
-                       "kindle.smtp_security", "kindle.smtp_user", "kindle.smtp_password"]
+        kindle_smtp_keys = ["kindle.from", "kindle.smtp_host", "kindle.smtp_port",
+                            "kindle.smtp_security", "kindle.smtp_user", "kindle.smtp_password"]
         pre = cx.get(f"{BASE}/api/admin/settings", headers=auth_super).json()
-        # any saved kindle setting (even a partial one) -> skip: the probes
+        # any saved kindle SMTP setting (even a partial one) -> skip: the probes
         # overwrite kindle.* and masked secrets can never be restored
-        if (pre.get("kindle.to") or pre.get("kindle.smtp_host")
+        if (pre.get("kindle.smtp_host")
                 or pre.get("kindle.smtp_user")
                 or (pre.get("kindle.smtp_password") or {}).get("set")):
             print("send-to-kindle: server already kindle-configured — skipping probes "
                   "(they would wipe saved credentials)")
         else:
             cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
-                   json={"values": {k: "" for k in kindle_keys}})
+                   json={"values": {k: "" for k in kindle_smtp_keys}})
             me0 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
             check("me.kindle false when unconfigured", me0.get("kindle") is False, str(me0))
-            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a)
+            # device CRUD (per-user rows in this instance's own DB — safe to probe)
+            r = cx.post(f"{BASE}/api/kindle/devices", headers=auth_a,
+                        json={"label": "", "email": "not-an-email"})
+            check("device add rejects bad email", r.status_code == 400, r.text[:120])
+            r = cx.post(f"{BASE}/api/kindle/devices", headers=auth_a,
+                        json={"label": "Paperwhite", "email": "alice_kindle@kindle.com"})
+            check("device add ok", r.status_code == 200 and len(r.json()) == 1
+                  and r.json()[0]["label"] == "Paperwhite", r.text[:160])
+            dev_a = r.json()[0]["id"]
+            r = cx.post(f"{BASE}/api/kindle/devices", headers=auth_a,
+                        json={"email": "alice_kindle@kindle.com"})
+            check("duplicate device email -> 409", r.status_code == 409, r.text[:120])
+            r = cx.post(f"{BASE}/api/kindle/devices", headers=auth_a,
+                        json={"email": "alice2@kindle.com"})
+            check("blank label defaults to email", r.status_code == 200
+                  and r.json()[-1]["label"] == "alice2@kindle.com", r.text[:160])
+            dev_a2 = r.json()[-1]["id"]
+            # SMTP still unset -> flag stays false even with devices
+            me1 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
+            check("me.kindle false with device but no SMTP", me1.get("kindle") is False, str(me1))
+            # cross-user isolation
+            r = cx.delete(f"{BASE}/api/kindle/devices/{dev_a}", headers=auth_b)
+            check("device delete by other user -> 404", r.status_code == 404, r.text[:120])
+            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a,
+                        json={"device_id": dev_a})
             check("kindle send unconfigured -> 502 readable",
                   r.status_code == 502 and "not configured" in r.json().get("detail", ""),
                   f"{r.status_code} {r.text[:120]}")
             r = cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
-                       json={"values": {"kindle.to": "selftest_kindle@kindle.com",
+                       json={"values": {"kindle.from": "selftest_sender@localhost",
                                         "kindle.smtp_host": "127.0.0.1", "kindle.smtp_port": "1"}})
             check("kindle settings accepted", r.status_code == 200, r.text[:120])
-            me1 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
-            check("me.kindle true when configured", me1.get("kindle") is True, str(me1))
-            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a)
+            me2 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
+            check("me.kindle true with device+SMTP", me2.get("kindle") is True, str(me2))
+            me_b = cx.get(f"{BASE}/api/me", headers=auth_b).json()
+            check("me.kindle false for user without devices", me_b.get("kindle") is False, str(me_b))
+            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a,
+                        json={"device_id": dev_a})
             check("kindle send smtp failure -> 502 readable",
                   r.status_code == 502 and "SMTP" in r.json().get("detail", ""),
                   f"{r.status_code} {r.text[:160]}")
+            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_b,
+                        json={"device_id": dev_a})
+            check("send with another user's device -> 404", r.status_code == 404,
+                  f"{r.status_code} {r.text[:120]}")
             nl = upload(cx, t_alice, "newline title.epub", make_newline_epub())
-            r = cx.post(f"{BASE}/api/books/{nl['book']['id']}/send-to-kindle", headers=auth_a)
+            r = cx.post(f"{BASE}/api/books/{nl['book']['id']}/send-to-kindle", headers=auth_a,
+                        json={"device_id": dev_a2})
             check("kindle newline title -> 502 readable (not 500)",
                   r.status_code == 502 and "SMTP" in r.json().get("detail", ""),
                   f"{r.status_code} {r.text[:160]}")
             mobi = upload(cx, t_alice, "Kindle Reject Probe.mobi", b"BOOKMOBI" + b"\x00" * 64)
-            r = cx.post(f"{BASE}/api/books/{mobi['book']['id']}/send-to-kindle", headers=auth_a)
+            r = cx.post(f"{BASE}/api/books/{mobi['book']['id']}/send-to-kindle", headers=auth_a,
+                        json={"device_id": dev_a})
             check("kindle rejects non-epub/pdf",
                   r.status_code == 502 and "only EPUB and PDF" in r.json().get("detail", ""),
                   f"{r.status_code} {r.text[:160]}")
+            r = cx.delete(f"{BASE}/api/kindle/devices/{dev_a}", headers=auth_a)
+            check("device delete by owner", r.status_code == 200, r.text[:120])
+            r = cx.delete(f"{BASE}/api/kindle/devices/{dev_a2}", headers=auth_a)
+            check("second device delete by owner", r.status_code == 200, r.text[:120])
             cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
-                   json={"values": {k: "" for k in kindle_keys}})  # leave nothing configured
+                   json={"values": {k: "" for k in kindle_smtp_keys}})  # leave nothing configured
 
         for path, label in [("/api/admin/zlib/limits", "zlib admin limits"),
                             ("/api/admin/zlib/history", "zlib admin history"),

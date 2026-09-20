@@ -20,7 +20,6 @@ KEYS = (
     "ai.api_key",
     "ai.base_url",
     "ai.model",
-    "kindle.to",
     "kindle.from",
     "kindle.smtp_host",
     "kindle.smtp_port",

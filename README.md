@@ -45,8 +45,11 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   See progress per job; retry or cancel from the UI.
 - **Send to Kindle**: one click on a shelf card emails an EPUB or PDF to your
   Kindle via Amazon's email gateway (any SMTP server — e.g. Gmail with an app
-  password). Add the sender address to your Amazon account's "Approved Personal
-  Document E-mail List"; delivery then just works on every registered device.
+  password). Each user registers their own Kindle devices (label + @kindle.com
+  address) under Settings → Kindle devices and picks one per send; the admin
+  configures the server-wide SMTP transport once. Add the sender address to
+  your Amazon account's "Approved Personal Document E-mail List"; delivery
+  then just works on every registered device.
 
 **Users & admin**
 - Multi-user with roles: **admin** and **user**. Login is **username + password**.
@@ -64,10 +67,11 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 **Admin panel** (in-app, admin only)
 - **Users**: create, approve, enable/disable, set role, reset password.
-- **Settings** (DB-backed, configured entirely in the UI): Z-Library account + mirror,
+- **Settings** (DB-backed, configured entirely in the UI): every user manages their
+  own Kindle devices; admins additionally configure Z-Library account + mirror,
   Anna's Archive
-  key + mirror, AI assist (enable/key/base/model), Send to Kindle (Kindle address,
-  SMTP host/port/security/credentials, sender address), registration mode. Secrets
+  key + mirror, AI assist (enable/key/base/model), Send to Kindle SMTP
+  (host/port/security/credentials, sender address), registration mode. Secrets
   are stored in the database (same on-disk trust boundary the old `.env.local` had)
   and masked in the API.
 - **Z-Library**: daily quota, the account's **download history** (one-click re-queue),

@@ -286,6 +286,13 @@ div.queue-cover.generated {
 }
 .admin-row:last-child { border-bottom: none; }
 .admin-row:first-child { border-top: 1px solid var(--line); }
+.kindle-device {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: none; cursor: pointer;
+}
+.kindle-device:hover { border-color: var(--ink-soft); }
+.kindle-device:disabled { opacity: 0.6; cursor: default; }
 .au-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .au-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .au-actions .btn-ghost, .au-actions .btn-primary { font-size: var(--fs-sm); padding: 4px 8px; }

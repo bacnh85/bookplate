@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from . import db, metadata, opds, settings
 from .annas_client import AnnasConfigError, AnnasUnavailable, annas
 from .auth import AdminDep, UserDep, admin_required, hash_password, make_token, verify_password
-from .kindle import KindleError, configured as kindle_configured, send as kindle_send
+from .kindle import KindleError, smtp_ready, send as kindle_send
 from .storage import book_path, cover_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
 from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
@@ -92,9 +92,57 @@ def _set_session(response: Response, token: str) -> None:
 
 @app.get("/api/me")
 def me(user=UserDep):
+    devices = _devices(user["id"])
     return {"id": user["id"], "username": user["username"],
             "role": user["role"], "status": user["status"],
-            "kindle": kindle_configured()}
+            "kindle": bool(smtp_ready() and devices), "devices": devices}
+
+
+# ---------- kindle devices (per-user) ----------
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _devices(user_id: int) -> list[dict]:
+    with db.conn() as con:
+        rows = con.execute("SELECT id, label, email FROM kindle_devices "
+                           "WHERE user_id=? ORDER BY id", (user_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+class DeviceReq(BaseModel):
+    label: str = ""
+    email: str
+
+
+@app.get("/api/kindle/devices")
+def kindle_devices(user=UserDep):
+    return _devices(user["id"])
+
+
+@app.post("/api/kindle/devices")
+def kindle_device_add(req: DeviceReq, user=UserDep):
+    email = req.email.strip()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "enter a valid email address")
+    label = req.label.strip() or email
+    with db.conn() as con:
+        try:
+            con.execute("INSERT INTO kindle_devices(user_id, label, email) VALUES(?,?,?)",
+                        (user["id"], label, email))
+        except Exception:
+            raise HTTPException(409, f"{email} is already in your device list")
+    return _devices(user["id"])
+
+
+@app.delete("/api/kindle/devices/{device_id}")
+def kindle_device_delete(device_id: int, user=UserDep):
+    with db.conn() as con:
+        cur = con.execute("DELETE FROM kindle_devices WHERE id=? AND user_id=?",
+                          (device_id, user["id"]))
+    if not cur.rowcount:
+        raise HTTPException(404, "no such device")
+    return {"ok": True}
 
 
 # ---------- books ----------
@@ -294,17 +342,25 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
     return {"ok": True}
 
 
+class KindleSendReq(BaseModel):
+    device_id: int
+
+
 @app.post("/api/books/{book_id}/send-to-kindle")
-def send_to_kindle(book_id: int, user=UserDep):
+def send_to_kindle(book_id: int, req: KindleSendReq, user=UserDep):
     with db.conn() as con:
         if not _book_visible(con, user["id"], book_id):
             _raise404()
         b = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        d = con.execute("SELECT email FROM kindle_devices WHERE id=? AND user_id=?",
+                        (req.device_id, user["id"])).fetchone()
+    if not b or not d:
+        _raise404()
     path = book_path(b["sha256"], b["ext"])
     if not path.exists():
         _raise404()
     try:
-        kindle_send(path, b["title"], b["authors"])
+        kindle_send(path, b["title"], b["authors"], d["email"])
     except KindleError as e:
         raise HTTPException(502, str(e))
     return {"ok": True}

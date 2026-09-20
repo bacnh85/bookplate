@@ -45,6 +45,7 @@ const fmtBytes = (n) => n == null ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB`
   : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
 
 let me_kindle = false;
+let me_devices = [], me_role = "";
 
 /* ---------- transfer stack (upload progress) ---------- */
 function transferCard(name) {
@@ -256,21 +257,55 @@ $("#share-ok").onclick = async () => {
 };
 
 /* ---------- send to kindle ---------- */
+let kindleBusy = false;
+async function doKindleSend(b, device, fail) {
+  if (kindleBusy) return false;
+  kindleBusy = true;
+  let err = null;
+  try {
+    await api(`/api/books/${b.id}/send-to-kindle`, { method: "POST", json: { device_id: device.id } });
+  } catch (e) { err = e.message; fail?.(err); }
+  finally { kindleBusy = false; }
+  return !err;
+}
+
 async function sendToKindle(btn, b) {
   if (btn.disabled) return;
   const orig = btn.textContent;
+  if (me_devices.length > 1) { renderKindleDialog(b); return; }
   btn.disabled = true;
   btn.textContent = "Sending…";
-  try {
-    await api(`/api/books/${b.id}/send-to-kindle`, { method: "POST" });
+  if (await doKindleSend(b, me_devices[0])) {
     btn.textContent = "Sent ✓";
     setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 4000);
-  } catch (err) {
-    alert(`Send failed: ${err.message}`);
+  } else {
     btn.disabled = false;
     btn.textContent = orig;
   }
 }
+
+function renderKindleDialog(b) {
+  const list = $("#kindle-device-list");
+  list.innerHTML = "";
+  $("#kindle-error").textContent = "";
+  for (const d of me_devices) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "kindle-device";
+    row.innerHTML = `<strong>${esc(d.label)}</strong><span class="result-sub">${esc(d.email)}</span>`;
+    row.onclick = async () => {
+      row.disabled = true;
+      row.textContent = "Sending…";
+      let msg = null;
+      if (await doKindleSend(b, d, (m) => { msg = m; })) { $("#kindle-dialog").close(); return; }
+      renderKindleDialog(b);
+      $("#kindle-error").textContent = msg || "";
+    };
+    list.appendChild(row);
+  }
+  $("#kindle-dialog").showModal();
+}
+$("#kindle-close").onclick = () => $("#kindle-dialog").close();
 
 /* ---------- find (z-library / anna's archive) ---------- */
 $("#tab-shelf").onclick = () => switchTab("shelf");
@@ -281,7 +316,7 @@ function switchTab(tab) {
   $("#admin-view").hidden = tab !== "admin";
   $("#tab-shelf").classList.toggle("active", tab === "shelf");
   $("#tab-find").classList.toggle("active", tab === "find");
-  $("#tab-admin").classList.toggle("active", tab === "admin");
+  $("#tab-settings").classList.toggle("active", tab === "admin");
   if (tab === "shelf") loadShelf($("#search").value);
   else if (tab === "find") showQuota();
   else if (tab === "admin") setAdminTab(adminTab);
@@ -606,8 +641,12 @@ async function boot() {
   try {
     const me = await api("/api/me");
     $("#user-name").textContent = me.username;
-    $("#tab-admin").hidden = me.role !== "admin";
+    $("#tab-settings").hidden = false;
+    me_role = me.role;
+    document.querySelectorAll('.admin-tab[data-tab="users"],.admin-tab[data-tab="settings"],.admin-tab[data-tab="zlib"]')
+      .forEach((b) => { b.hidden = me_role !== "admin"; });
     me_kindle = !!me.kindle;
+    me_devices = me.devices || [];
     me_id = me.id;
     loadShelf();
     refreshQueue();  // badge + resume polling if jobs are active
@@ -616,25 +655,61 @@ async function boot() {
 $("#logout-btn").onclick = logout;
 boot();
 
-/* ---------- admin ---------- */
-let adminTab = "users";
+/* ---------- settings (all users; admin-only sub-tabs gated in boot) ---------- */
+let adminTab = "devices";
 let zhPage = 1, zhTotal = 1;
 
-$("#tab-admin").onclick = () => switchTab("admin");
+$("#tab-settings").onclick = () => switchTab("admin");
 document.querySelectorAll(".admin-tab").forEach((b) => {
   b.onclick = () => setAdminTab(b.dataset.tab);
 });
 function setAdminTab(tab) {
+  if (me_role !== "admin" && tab !== "devices") tab = "devices";
   adminTab = tab;
   document.querySelectorAll(".admin-tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === tab));
-  ["users", "settings", "zlib"].forEach((t) => { $(`#admin-${t}`).hidden = t !== tab; });
+  ["devices", "users", "settings", "zlib"].forEach((t) => { $(`#admin-${t}`).hidden = t !== tab; });
   $("#admin-error").textContent = "";
+  if (tab === "devices") loadDevices();
   if (tab === "users") loadAdminUsers();
   if (tab === "settings") loadAdminSettings();
   if (tab === "zlib") loadAdminZlib();
 }
 const adminFail = (e) => { $("#admin-error").textContent = e.message; };
+
+/* ----- kindle devices tab (every user) ----- */
+async function loadDevices() {
+  const box = $("#device-list");
+  let devs;
+  try { devs = await api("/api/kindle/devices"); }
+  catch (e) { box.textContent = e.message; return; }
+  me_devices = devs;
+  box.innerHTML = devs.length ? "" : "No devices yet — add your Kindle's @kindle.com address above.";
+  for (const d of devs) {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    row.innerHTML = `<strong>${esc(d.label)}</strong><span class="au-email">${esc(d.email)}</span>`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn-ghost";
+    del.textContent = "Delete";
+    del.onclick = async () => {
+      try { await api(`/api/kindle/devices/${d.id}`, { method: "DELETE" }); loadDevices(); boot(); }
+      catch (e) { adminFail(e); }
+    };
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+$("#device-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/kindle/devices", { method: "POST", json: {
+      label: $("#nd-label").value.trim(), email: $("#nd-email").value.trim() } });
+    $("#nd-label").value = ""; $("#nd-email").value = "";
+    loadDevices(); boot();  // boot re-gates the shelf's Kindle buttons
+  } catch (err) { adminFail(err); }
+};
 
 /* ----- users tab ----- */
 let adminUsersSeq = 0;
@@ -712,7 +787,6 @@ async function loadAdminSettings() {
   $("#set-annas-base").value = s["annas.base_url"] || "";
   $("#set-ai-base").value = s["ai.base_url"] || "";
   $("#set-ai-model").value = s["ai.model"] || "";
-  $("#set-kindle-to").value = s["kindle.to"] || "";
   $("#set-kindle-from").value = s["kindle.from"] || "";
   $("#set-kindle-host").value = s["kindle.smtp_host"] || "";
   $("#set-kindle-port").value = s["kindle.smtp_port"] || "";
@@ -739,7 +813,6 @@ $("#admin-settings-form").onsubmit = async (e) => {
     "annas.base_url": $("#set-annas-base").value.trim(),
     "ai.base_url": $("#set-ai-base").value.trim(),
     "ai.model": $("#set-ai-model").value.trim(),
-    "kindle.to": $("#set-kindle-to").value.trim(),
     "kindle.from": $("#set-kindle-from").value.trim(),
     "kindle.smtp_host": $("#set-kindle-host").value.trim(),
     "kindle.smtp_port": $("#set-kindle-port").value.trim(),
@@ -754,7 +827,7 @@ $("#admin-settings-form").onsubmit = async (e) => {
     else if (clearFlags.has(key)) values[key] = "";  // explicit clear -> empty value
     // else: leave untouched
   }
-  try { await api("/api/admin/settings", { method: "PUT", json: { values } }); loadAdminSettings(); }
+  try { await api("/api/admin/settings", { method: "PUT", json: { values } }); loadAdminSettings(); boot(); }  // boot re-gates Kindle buttons (smtp_ready changed)
   catch (err) { adminFail(err); }
 };
 
