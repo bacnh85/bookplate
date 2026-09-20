@@ -38,6 +38,10 @@ def _ascii_name(title: str, authors: str, ext: str) -> str:
 
 
 def send(path: Path, title: str, authors: str, to: str) -> None:
+    # guard here (not just at device-add) so devices saved before the
+    # @kindle.com rule can't relay through the admin's SMTP either
+    if not to.lower().endswith("@kindle.com"):
+        raise KindleError("device address must end in @kindle.com — re-add it under Settings → Kindle devices")
     host = settings.get("kindle.smtp_host")
     if not host:
         raise KindleError("Kindle delivery is not configured (ask the admin to set up SMTP)")
