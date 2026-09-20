@@ -17,6 +17,7 @@ import io
 import os
 import random
 import re
+import sqlite3
 import string
 import sys
 import stat
@@ -443,6 +444,25 @@ def main():
             check("kindle rejects non-epub/pdf",
                   r.status_code == 502 and "only EPUB and PDF" in r.json().get("detail", ""),
                   f"{r.status_code} {r.text[:160]}")
+            # send-time relay guard: a device stored before the @kindle.com rule
+            # (row inserted directly, as on pre-fix deployments) must fail the
+            # send with a readable 502, never relay through the admin's SMTP.
+            # Needs the server's DB on this filesystem (true locally and in CI).
+            dev_db = Path(os.getenv("BOOKPLATE_DATA_DIR")
+                          or Path(__file__).resolve().parent.parent / "data") / "ebook.db"
+            if dev_db.exists():
+                con = sqlite3.connect(dev_db, timeout=5)
+                cur = con.execute("INSERT INTO kindle_devices(user_id, label, email) VALUES(?,?,?)",
+                                  (_uid_by_name(cx, ah, ALICE), "Legacy", "legacy@example.com"))
+                legacy_id = cur.lastrowid
+                con.commit()
+                con.close()
+                r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a,
+                            json={"device_id": legacy_id})
+                check("send with stored non-kindles device -> 502 (relay guard)",
+                      r.status_code == 502 and "@kindle.com" in r.json().get("detail", ""),
+                      f"{r.status_code} {r.text[:120]}")
+                cx.delete(f"{BASE}/api/kindle/devices/{legacy_id}", headers=auth_a)
             r = cx.delete(f"{BASE}/api/kindle/devices/{dev_a}", headers=auth_a)
             check("device delete by owner", r.status_code == 200, r.text[:120])
             r = cx.delete(f"{BASE}/api/kindle/devices/{dev_a2}", headers=auth_a)
