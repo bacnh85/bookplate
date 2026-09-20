@@ -180,10 +180,9 @@ function bookMenuItems(b) {
   if (b.own) items.push({ label: "Share…", fn: () => shareBook(b) });
   items.push("sep", { label: "Add to Collection…", fn: () => openCollectionDialog(b) });
   if (b.own) items.push("sep", { label: "Remove from shelf", danger: true, fn: async () => {
-    if (confirm(`Remove "${b.title}" from your shelf?`)) {
-      await api(`/api/books/${b.id}`, { method: "DELETE" });
-      rerenderView();
-    }
+    if (!(await confirmDialog("Remove from shelf", `Remove "${b.title}" from your shelf?`))) return;
+    await api(`/api/books/${b.id}`, { method: "DELETE" });
+    rerenderView();
   } });
   return items;
 }
@@ -437,6 +436,20 @@ function promptDialog(title, initial = "") {
   });
 }
 
+function confirmDialog(title, body = "", okLabel = "Remove") {
+  return new Promise((resolve) => {
+    const dlg = $("#confirm-dialog");
+    $("#confirm-title").textContent = title;
+    $("#confirm-body").textContent = body;
+    $("#confirm-body").hidden = !body;
+    $("#confirm-ok").textContent = okLabel;
+    const onClose = () => { dlg.removeEventListener("close", onClose); resolve(dlg.returnValue === "ok"); };
+    dlg.addEventListener("close", onClose);
+    dlg.showModal();
+    $("#confirm-ok").focus();
+  });
+}
+
 $("#nav-new-collection").onclick = async () => {
   const name = await promptDialog("New collection");
   if (!name) return;
@@ -461,7 +474,8 @@ $("#collection-rename").onclick = async () => {
 
 $("#collection-delete").onclick = async () => {
   const c = collections.find((x) => x.id === currentCollectionId);
-  if (!c || !confirm(`Delete collection "${c.name}"? Books stay on your shelf.`)) return;
+  if (!c) return;
+  if (!(await confirmDialog("Delete collection", `Delete "${c.name}"? Books stay on your shelf.`, "Delete"))) return;
   try {
     await api(`/api/collections/${c.id}`, { method: "DELETE" });
     loadCollections();
@@ -1017,7 +1031,7 @@ async function loadAdminUsers() {
         api(`/api/admin/users/${u.id}/set-role`, { method: "POST", json: { role: u.role === "admin" ? "user" : "admin" } }));
       act("Disable", () => api(`/api/admin/users/${u.id}/disable`, { method: "POST" }));
       act("Reset PW", async () => {
-        const pw = prompt(`New password for ${u.username} (min 6 chars)`);
+        const pw = await promptDialog(`New password for ${u.username} (min 6 chars)`);
         if (pw) await api(`/api/admin/users/${u.id}/reset-password`, { method: "POST", json: { password: pw } });
       });
     }

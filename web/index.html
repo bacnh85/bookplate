@@ -244,6 +244,17 @@
   </form>
 </dialog>
 
+<dialog id="confirm-dialog">
+  <form method="dialog">
+    <h2 id="confirm-title">Confirm</h2>
+    <p class="result-sub" id="confirm-body" hidden></p>
+    <div style="display:flex; gap:8px; justify-content:flex-end">
+      <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+      <button class="btn-danger" value="ok" id="confirm-ok" type="submit">Remove</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="detail-dialog">
   <button class="btn-ghost detail-close" id="detail-close" type="button" aria-label="Close">✕</button>
   <div class="detail-head">
@@ -287,6 +298,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=7"></script>
+<script type="module" src="/app.js?v=8"></script>
 </body>
 </html>
