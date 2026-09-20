@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from . import db, metadata, opds, settings
 from .annas_client import AnnasConfigError, AnnasUnavailable, annas
 from .auth import AdminDep, UserDep, admin_required, hash_password, make_token, verify_password
+from .kindle import KindleError, configured as kindle_configured, send as kindle_send
 from .storage import book_path, cover_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
 from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
@@ -92,7 +93,8 @@ def _set_session(response: Response, token: str) -> None:
 @app.get("/api/me")
 def me(user=UserDep):
     return {"id": user["id"], "username": user["username"],
-            "role": user["role"], "status": user["status"]}
+            "role": user["role"], "status": user["status"],
+            "kindle": kindle_configured()}
 
 
 # ---------- books ----------
@@ -289,6 +291,22 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
             raise HTTPException(404, f"no user {req.username}")
         con.execute("INSERT OR IGNORE INTO shares(book_id, from_user, to_user) VALUES(?,?,?)",
                     (book_id, user["id"], to["id"]))
+    return {"ok": True}
+
+
+@app.post("/api/books/{book_id}/send-to-kindle")
+def send_to_kindle(book_id: int, user=UserDep):
+    with db.conn() as con:
+        if not _book_visible(con, user["id"], book_id):
+            _raise404()
+        b = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+    path = book_path(b["sha256"], b["ext"])
+    if not path.exists():
+        _raise404()
+    try:
+        kindle_send(path, b["title"], b["authors"])
+    except KindleError as e:
+        raise HTTPException(502, str(e))
     return {"ok": True}
 
 
@@ -524,7 +542,7 @@ def admin_reset_password(uid: int, req: PasswordReq, admin=AdminDep):
 
 # ---------- admin: app-managed settings ----------
 
-SECRET_SETTINGS = {"zlib.password", "annas.secret_key", "ai.api_key"}
+SECRET_SETTINGS = {"zlib.password", "annas.secret_key", "ai.api_key", "kindle.smtp_password"}
 
 
 def _mask(v: str) -> dict:
@@ -551,6 +569,10 @@ def admin_put_settings(req: SettingsReq, admin=AdminDep):
             raise HTTPException(400, f"unknown setting {k}")
         if k == "registration" and v not in ("approval", "closed"):
             raise HTTPException(400, "registration must be 'approval' or 'closed'")
+        if k == "kindle.smtp_security" and v not in ("", "starttls", "ssl", "none"):
+            raise HTTPException(400, "kindle.smtp_security must be starttls, ssl or none")
+        if k == "kindle.smtp_port" and v and not v.isdigit():
+            raise HTTPException(400, "kindle.smtp_port must be a number")
     for k, v in req.values.items():  # validate all before writing any
         settings.set(k, v)
     return {"ok": True}

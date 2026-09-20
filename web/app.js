@@ -44,6 +44,8 @@ function xhr(method, path, { body, responseType, onProgress, uploadProgress } = 
 const fmtBytes = (n) => n == null ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB`
   : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
 
+let me_kindle = false;
+
 /* ---------- transfer stack (upload progress) ---------- */
 function transferCard(name) {
   const el = document.createElement("div");
@@ -119,12 +121,15 @@ async function loadShelf(q = "") {
       <div class="book-actions">
         <button class="btn-ghost" data-act="read">Read</button>
         <button class="btn-ghost" data-act="download">Download</button>
+        ${(me_kindle && ["epub", "pdf"].includes(b.ext)) ? `<button class="btn-ghost" data-act="kindle">Kindle</button>` : ""}
         ${b.own ? `<button class="btn-ghost" data-act="share">Share</button>
         <button class="btn-danger" data-act="delete">✕</button>` : ""}
       </div>`;
     card.querySelector(".cover").onclick = () => openReader(b.id);
     card.querySelector('[data-act="read"]').onclick = () => openReader(b.id);
     card.querySelector('[data-act="download"]').onclick = (e) => downloadBook(e.currentTarget, b);
+    const kindleBtn = card.querySelector('[data-act="kindle"]');
+    if (kindleBtn) kindleBtn.onclick = (e) => sendToKindle(e.currentTarget, b);
     const share = card.querySelector('[data-act="share"]');
     if (share) share.onclick = () => shareBook(b);
     const del = card.querySelector('[data-act="delete"]');
@@ -249,6 +254,23 @@ $("#share-ok").onclick = async () => {
     $("#share-dialog").close();
   } catch (err) { $("#share-error").textContent = err.message; }
 };
+
+/* ---------- send to kindle ---------- */
+async function sendToKindle(btn, b) {
+  if (btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+  try {
+    await api(`/api/books/${b.id}/send-to-kindle`, { method: "POST" });
+    btn.textContent = "Sent ✓";
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 4000);
+  } catch (err) {
+    alert(`Send failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
 
 /* ---------- find (z-library / anna's archive) ---------- */
 $("#tab-shelf").onclick = () => switchTab("shelf");
@@ -585,6 +607,7 @@ async function boot() {
     const me = await api("/api/me");
     $("#user-name").textContent = me.username;
     $("#tab-admin").hidden = me.role !== "admin";
+    me_kindle = !!me.kindle;
     me_id = me.id;
     loadShelf();
     refreshQueue();  // badge + resume polling if jobs are active
@@ -667,7 +690,7 @@ $("#admin-user-form").onsubmit = async (e) => {
 };
 
 /* ----- settings tab ----- */
-const SECRET_FIELDS = { "zlib.password": "#set-zlib-password", "annas.secret_key": "#set-annas-key", "ai.api_key": "#set-ai-key" };
+const SECRET_FIELDS = { "zlib.password": "#set-zlib-password", "annas.secret_key": "#set-annas-key", "ai.api_key": "#set-ai-key", "kindle.smtp_password": "#set-kindle-password" };
 const clearFlags = new Set();
 document.querySelectorAll("[data-clear]").forEach((b) => {
   b.onclick = () => { clearFlags.add(b.dataset.clear); $(SECRET_FIELDS[b.dataset.clear]).value = ""; b.textContent = "cleared on save"; };
@@ -689,12 +712,18 @@ async function loadAdminSettings() {
   $("#set-annas-base").value = s["annas.base_url"] || "";
   $("#set-ai-base").value = s["ai.base_url"] || "";
   $("#set-ai-model").value = s["ai.model"] || "";
+  $("#set-kindle-to").value = s["kindle.to"] || "";
+  $("#set-kindle-from").value = s["kindle.from"] || "";
+  $("#set-kindle-host").value = s["kindle.smtp_host"] || "";
+  $("#set-kindle-port").value = s["kindle.smtp_port"] || "";
+  $("#set-kindle-user").value = s["kindle.smtp_user"] || "";
+  $("#set-kindle-security").value = s["kindle.smtp_security"] || "starttls";
   $("#set-registration").value = s.registration || "approval";
   $("#set-ai-enabled").checked = s["ai.enabled"] !== "0";
   for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
     const v = s[key];
     $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("zlib") ? "password"
-      : sel.includes("annas") ? "secret key" : "API key";
+      : sel.includes("annas") ? "secret key" : sel.includes("kindle") ? "SMTP password" : "API key";
     $(sel).value = "";
   }
   clearFlags.clear();
@@ -710,6 +739,12 @@ $("#admin-settings-form").onsubmit = async (e) => {
     "annas.base_url": $("#set-annas-base").value.trim(),
     "ai.base_url": $("#set-ai-base").value.trim(),
     "ai.model": $("#set-ai-model").value.trim(),
+    "kindle.to": $("#set-kindle-to").value.trim(),
+    "kindle.from": $("#set-kindle-from").value.trim(),
+    "kindle.smtp_host": $("#set-kindle-host").value.trim(),
+    "kindle.smtp_port": $("#set-kindle-port").value.trim(),
+    "kindle.smtp_security": $("#set-kindle-security").value,
+    "kindle.smtp_user": $("#set-kindle-user").value.trim(),
     "ai.enabled": $("#set-ai-enabled").checked ? "1" : "0",
     registration: $("#set-registration").value,
   };

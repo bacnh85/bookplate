@@ -90,6 +90,20 @@
             <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
           <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
           <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
+          <h3>Send to Kindle</h3>
+          <input type="email" id="set-kindle-to" placeholder="Kindle address, e.g. yourname_kindle@kindle.com">
+          <input type="email" id="set-kindle-from" placeholder="sender email — must be on the Amazon account's approved list">
+          <input type="text" id="set-kindle-host" placeholder="SMTP host, e.g. smtp.gmail.com">
+          <div class="secret-row"><input type="text" id="set-kindle-port" placeholder="SMTP port (default 587)">
+            <select id="set-kindle-security">
+              <option value="starttls">STARTTLS</option>
+              <option value="ssl">SSL/TLS</option>
+              <option value="none">no encryption</option>
+            </select></div>
+          <input type="text" id="set-kindle-user" placeholder="SMTP username (optional)">
+          <div class="secret-row"><input type="password" id="set-kindle-password" placeholder="SMTP password" autocomplete="new-password">
+            <button type="button" class="btn-ghost link" data-clear="kindle.smtp_password">clear</button></div>
+          <p class="result-sub">Kindle accepts EPUB and PDF. Add the sender email to your Amazon account's "Approved Personal Document E-mail List".</p>
           <h3>Registration</h3>
           <select id="set-registration">
             <option value="approval">new accounts need admin approval</option>
@@ -170,6 +184,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=2"></script>
+<script type="module" src="/app.js?v=3"></script>
 </body>
 </html>

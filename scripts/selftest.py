@@ -3,7 +3,8 @@
 
 Generates a test corpus with ebooklib/pypdf, then verifies: auth (+ approval flow),
 ingest, metadata extraction chain, exact dedup, logical dup, sharing, FTS search,
-covers, download, delete, OPDS, z-lib gating, admin RBAC + settings + z-lib admin.
+covers, download, delete, OPDS, z-lib gating, send-to-kindle gating, admin RBAC
++ settings + z-lib admin.
 
 Usage: .venv/bin/python scripts/selftest.py [base_url]
 
@@ -72,6 +73,18 @@ def make_bare_epub() -> bytes:
     b = epub.EpubBook()  # no title/author on purpose
     b.set_identifier(f"id2-{rand}")
     c = epub.EpubHtml(title="x", file_name="c1.xhtml", content="<p>nothing</p>")
+    b.add_item(c); b.add_item(epub.EpubNcx()); b.add_item(epub.EpubNav())
+    b.spine = ["nav", c]
+    data = io.BytesIO(); epub.write_epub(data, b)
+    return data.getvalue()
+
+
+def make_newline_epub() -> bytes:
+    b = epub.EpubBook()  # DC:title with a newline: must 502 readably, not 500
+    b.set_identifier(f"id3-{rand}")
+    b.set_title(f"Broken\nTitle {rand}")
+    b.add_author("Newline Author")
+    c = epub.EpubHtml(title="x", file_name="c1.xhtml", content="<p>nl</p>")
     b.add_item(c); b.add_item(epub.EpubNcx()); b.add_item(epub.EpubNav())
     b.spine = ["nav", c]
     data = io.BytesIO(); epub.write_epub(data, b)
@@ -344,6 +357,54 @@ def main():
         r = cx.put("/api/admin/settings", headers=auth_super,
                    json={"values": {"not.a.key": "x"}})
         check("settings PUT rejects unknown key", r.status_code == 400, str(r.status_code))
+
+        # 15d. send-to-kindle: config gating + readable SMTP failure, fully
+        # hermetic — the configured host is 127.0.0.1:1 (instant refusal), so
+        # no real mail is sent anywhere. SKIPPED on a server that already has
+        # kindle configured: the probes must not wipe saved SMTP credentials
+        # (secrets are masked and can never be read back to restore).
+        kindle_keys = ["kindle.to", "kindle.from", "kindle.smtp_host", "kindle.smtp_port",
+                       "kindle.smtp_security", "kindle.smtp_user", "kindle.smtp_password"]
+        pre = cx.get(f"{BASE}/api/admin/settings", headers=auth_super).json()
+        # any saved kindle setting (even a partial one) -> skip: the probes
+        # overwrite kindle.* and masked secrets can never be restored
+        if (pre.get("kindle.to") or pre.get("kindle.smtp_host")
+                or pre.get("kindle.smtp_user")
+                or (pre.get("kindle.smtp_password") or {}).get("set")):
+            print("send-to-kindle: server already kindle-configured — skipping probes "
+                  "(they would wipe saved credentials)")
+        else:
+            cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
+                   json={"values": {k: "" for k in kindle_keys}})
+            me0 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
+            check("me.kindle false when unconfigured", me0.get("kindle") is False, str(me0))
+            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a)
+            check("kindle send unconfigured -> 502 readable",
+                  r.status_code == 502 and "not configured" in r.json().get("detail", ""),
+                  f"{r.status_code} {r.text[:120]}")
+            r = cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
+                       json={"values": {"kindle.to": "selftest_kindle@kindle.com",
+                                        "kindle.smtp_host": "127.0.0.1", "kindle.smtp_port": "1"}})
+            check("kindle settings accepted", r.status_code == 200, r.text[:120])
+            me1 = cx.get(f"{BASE}/api/me", headers=auth_a).json()
+            check("me.kindle true when configured", me1.get("kindle") is True, str(me1))
+            r = cx.post(f"{BASE}/api/books/{b2['id']}/send-to-kindle", headers=auth_a)
+            check("kindle send smtp failure -> 502 readable",
+                  r.status_code == 502 and "SMTP" in r.json().get("detail", ""),
+                  f"{r.status_code} {r.text[:160]}")
+            nl = upload(cx, t_alice, "newline title.epub", make_newline_epub())
+            r = cx.post(f"{BASE}/api/books/{nl['book']['id']}/send-to-kindle", headers=auth_a)
+            check("kindle newline title -> 502 readable (not 500)",
+                  r.status_code == 502 and "SMTP" in r.json().get("detail", ""),
+                  f"{r.status_code} {r.text[:160]}")
+            mobi = upload(cx, t_alice, "Kindle Reject Probe.mobi", b"BOOKMOBI" + b"\x00" * 64)
+            r = cx.post(f"{BASE}/api/books/{mobi['book']['id']}/send-to-kindle", headers=auth_a)
+            check("kindle rejects non-epub/pdf",
+                  r.status_code == 502 and "only EPUB and PDF" in r.json().get("detail", ""),
+                  f"{r.status_code} {r.text[:160]}")
+            cx.put(f"{BASE}/api/admin/settings", headers=auth_super,
+                   json={"values": {k: "" for k in kindle_keys}})  # leave nothing configured
+
         for path, label in [("/api/admin/zlib/limits", "zlib admin limits"),
                             ("/api/admin/zlib/history", "zlib admin history"),
                             ("/api/admin/zlib/library", "zlib admin library"),

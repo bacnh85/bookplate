@@ -20,6 +20,13 @@ KEYS = (
     "ai.api_key",
     "ai.base_url",
     "ai.model",
+    "kindle.to",
+    "kindle.from",
+    "kindle.smtp_host",
+    "kindle.smtp_port",
+    "kindle.smtp_security",
+    "kindle.smtp_user",
+    "kindle.smtp_password",
     # UI-only toggle
     "registration",
 )
