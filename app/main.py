@@ -322,6 +322,10 @@ def remove_book(book_id: int, user=UserDep):
         if not b or not _book_visible(con, user["id"], book_id):
             _raise404()
         con.execute("DELETE FROM user_books WHERE user_id=? AND book_id=?", (user["id"], book_id))
+        # drop the remover's collection memberships too: the book row can survive
+        # via other owners/shares, so its ON DELETE CASCADE never fires for them
+        con.execute("DELETE FROM collection_books WHERE book_id=? AND collection_id IN "
+                    "(SELECT id FROM collections WHERE user_id=?)", (book_id, user["id"]))
         left = con.execute("SELECT COUNT(*) c FROM user_books WHERE book_id=?", (book_id,)).fetchone()["c"]
         shared = con.execute("SELECT COUNT(*) c FROM shares WHERE book_id=?", (book_id,)).fetchone()["c"]
         if left == 0 and shared == 0:

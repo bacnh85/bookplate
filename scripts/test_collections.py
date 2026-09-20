@@ -142,7 +142,9 @@ class CollectionTests(unittest.TestCase):
 
     def test_me_sources_flags(self):
         u = admin()
-        main.me(u)["sources"] == {"zlib": False, "annas": False}
+        src = main.me(u)["sources"]
+        self.assertEqual(src["zlib"], False)
+        self.assertEqual(src["annas"], False)
         settings.set("zlib.email", "a@b.c")
         settings.set("zlib.password", "pw")
         self.assertEqual(main.me(u)["sources"]["zlib"], True)
@@ -150,6 +152,26 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(main.me(u)["sources"]["zlib"], False)
         settings.set("annas.secret_key", "k")
         self.assertEqual(main.me(u)["sources"]["annas"], True)
+
+    def test_remove_book_drops_memberships(self):
+        # two owners: removing the book from one shelf must not leave stale
+        # collection rows behind (the book row survives via the other owner,
+        # so the FK cascade never fires for the remover's memberships)
+        a, b = {"id": self.u1}, {"id": self.u2}
+        bid = mk_book("Two owners", self.u1, "e" * 64)
+        with db.conn() as con:
+            con.execute("INSERT INTO user_books(user_id, book_id) VALUES(?,?)",
+                        (self.u2, bid))
+        c = main.create_collection(main.CollectionReq(name="Mine"), b)
+        main.collection_add_book(c["id"], main.BookIdReq(book_id=bid), b)
+        main.remove_book(bid, b)  # B removes; book survives (A still owns it)
+        with db.conn() as con:
+            self.assertIsNotNone(con.execute("SELECT 1 FROM books WHERE id=?", (bid,)).fetchone())
+            orphans = con.execute("SELECT COUNT(*) n FROM collection_books").fetchone()["n"]
+        self.assertEqual(orphans, 0)
+        self.assertEqual(main.list_collections(b)[0]["book_count"], 0)
+        self.assertEqual(main.list_collections(b, book_id=bid)[0]["member"], 0)
+        self.assertIsNotNone(main.get_book(bid, a))  # A keeps the book
 
 
 if __name__ == "__main__":

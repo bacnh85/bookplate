@@ -283,7 +283,7 @@ async function uploadFiles(files) {
       else card.done("Added ✓");
     } catch (err) { card.fail(err.message); }
   }
-  loadShelf();
+  rerenderView();  // stay in the current view (collection/home), don't jump to All
 }
 
 /* ---------- share ---------- */
@@ -585,10 +585,10 @@ function renderSourceCards() {
 async function showQuota() {
   if (findSource !== "zlib") return;
   const src = findSource;  // the reply may land after the user switched sources
+  const el = $("#store-zlib-quota");  // hoisted: the catch below clears it too
   try {
     const l = await api("/api/zlib/limits");
     if (findSource !== src) return;
-    const el = $("#store-zlib-quota");
     if (el) el.textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads left`;
   } catch { if (el) el.textContent = ""; /* unconfigured — surfaced on search */ }
 }
