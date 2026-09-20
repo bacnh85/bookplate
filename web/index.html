@@ -23,7 +23,7 @@
 <section id="app-view" hidden>
   <div class="shell">
 
-    <nav class="sidebar" aria-label="Main">
+    <nav class="sidebar" id="sidebar" aria-label="Main">
       <h1 class="wordmark">Bookplate<span>.</span></h1>
       <input type="search" id="search" placeholder="Search library" autocomplete="off" aria-label="Search library">
 
@@ -63,6 +63,9 @@
 
     <div class="content">
       <header>
+        <button class="btn-ghost" id="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="sidebar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
         <span class="spacer"></span>
         <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
         <button class="btn-ghost" id="tab-settings" type="button" hidden>Settings</button>
@@ -199,6 +202,8 @@
     </div>
   </div>
 </section>
+
+<div id="scrim" hidden></div>
 
 <div id="ctx-menu" class="menu" role="menu" hidden></div>
 

@@ -192,7 +192,7 @@ $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
     shelfFilter = null;  // search spans the whole library
-    show("library");
+    show("library", null, true);  // keepDrawer: don't yank the drawer out from under typing fingers
   }, 250);
 };
 
@@ -358,7 +358,8 @@ let currentView = "home";
 let currentCollectionId = null;
 const VIEW_ELS = { home: "#home-view", store: "#store-view", library: "#library-view", admin: "#admin-view" };
 
-function show(view, collectionId = null) {
+function show(view, collectionId = null, keepDrawer = false) {
+  if (!keepDrawer) setDrawer(false);
   currentView = view;
   if (collectionId != null) currentCollectionId = collectionId;
   const elKey = view === "collection" ? "library" : view;  // collection shares the library pane
@@ -390,6 +391,17 @@ document.querySelectorAll(".side-link[data-view]").forEach((b) => {
   };
 });
 $("#tab-settings").onclick = () => show("admin");
+
+/* ---------- mobile drawer ---------- */
+const sidebar = $(".sidebar"), scrim = $("#scrim"), menuBtn = $("#menu-btn");
+function setDrawer(open) {
+  sidebar.classList.toggle("open", open);
+  scrim.hidden = !open;
+  menuBtn.setAttribute("aria-expanded", String(open));
+}
+menuBtn.onclick = () => setDrawer(!sidebar.classList.contains("open"));
+scrim.onclick = () => setDrawer(false);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
 
 /* ---------- collections ---------- */
 let collections = [];
