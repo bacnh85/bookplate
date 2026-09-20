@@ -293,11 +293,15 @@ function shareBook(b) {
   $("#share-user").value = "";
   $("#share-dialog").showModal();
 }
-$("#share-ok").onclick = async () => {
+$("#share-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = e.submitter || $("#share-form [type=submit]");
+  btn.disabled = true;
   try {
     await api(`/api/books/${shareBookId}/share`, { method: "POST", json: { username: $("#share-user").value } });
     $("#share-dialog").close();
   } catch (err) { $("#share-error").textContent = err.message; }
+  finally { btn.disabled = false; }
 };
 
 /* ---------- send to kindle ---------- */
@@ -535,12 +539,15 @@ $("#collection-create-form").onsubmit = async (e) => {
   e.preventDefault();
   const name = $("#collection-new-name").value.trim();
   if (!name) return;
+  const btn = e.submitter || $("#collection-create-form [type=submit]");
+  btn.disabled = true;
   try {
     await api("/api/collections", { method: "POST", json: { name } });
     $("#collection-new-name").value = "";
     await loadCollections();
     if (collectBookId) openCollectionDialog({ id: collectBookId });  // re-render with the new collection
   } catch (e) { $("#collection-error").textContent = e.message; }
+  finally { btn.disabled = false; }
 };
 
 /* rows carry `source: "annas"` from the annas search; absent = z-library.
