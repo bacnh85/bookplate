@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS shares(
   created_at TEXT DEFAULT (datetime('now')),
   UNIQUE(book_id, to_user)
 );
+CREATE TABLE IF NOT EXISTS collections(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL COLLATE NOCASE,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE(user_id, name)
+);
+CREATE TABLE IF NOT EXISTS collection_books(
+  collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  added_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (collection_id, book_id)
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
   title, authors, categories, isbn, content='books', content_rowid='id'
 );

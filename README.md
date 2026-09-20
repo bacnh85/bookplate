@@ -13,6 +13,14 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 ## Features
 
+**Interface**
+- Apple Books–style UI: sidebar navigation (Home, Book Store, Library filters,
+  My Collections), cover-only book tiles with a `⋯` menu (Read, Download,
+  Send to Kindle, Share, Add to Collection, Remove), and a Home page with
+  library stats, Continue reading and Recently added.
+- **My Collections**: create your own collections in the sidebar and file any
+  book on your shelf — including ones shared with you — into them.
+
 **Library**
 - Upload PDF, EPUB, MOBI, AZW3, FB2, CBZ — drag-and-drop or file picker, sequential
   batch uploads with per-file progress.
@@ -32,7 +40,10 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   current position remembered per user, mobile-friendly.
 - **Download** any book for offline reading; CBZ/PDF open natively where supported.
 
-**Find books (integrations)**
+**Book Store (integrations)**
+- Source status cards show at a glance whether Z-Library / Anna's Archive are
+  configured (connected account, daily quota) — with setup guidance right on
+  the card when they're not.
 - **Z-Library** via the bundled `zlib` CLI: search, results with covers/ratings/
   year/language/file size, and one-click *Get later* into the download queue.
   Auto-login from your account, automatic session renewal, configurable mirror.

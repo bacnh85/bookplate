@@ -51,8 +51,11 @@ async function openFoliate(blob) {
 
   view.addEventListener("relocate", (e) => {
     const { cfi, fraction } = e.detail;
+    const pct = Math.round((fraction ?? 0) * 100);
     localStorage.setItem(progressKey, cfi);
-    $("#progress").textContent = `${Math.round((fraction ?? 0) * 100)}%`;
+    // ponytail: progress is per-browser; server-side sync only if multi-device resume matters
+    localStorage.setItem(`${progressKey}-pct`, String(pct));
+    $("#progress").textContent = `${pct}%`;
   });
 
   await view.init({ lastLocation: localStorage.getItem(progressKey) });

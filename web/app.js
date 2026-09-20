@@ -45,6 +45,7 @@ const fmtBytes = (n) => n == null ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB`
   : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
 
 let me_kindle = false;
+let me_sources = { zlib: false, annas: false, zlib_domain: "", annas_base: "" };
 let me_devices = [], me_role = "";
 
 /* ---------- transfer stack (upload progress) ---------- */
@@ -96,69 +97,114 @@ $("#auth-form").onsubmit = async (e) => {
 /* ---------- shelf ---------- */
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+/* ---------- library views (All / format filter / collection) ---------- */
+let shelfFilter = null;  // null = All; "books" | "pdf" | "cbz"
+const EXT_GROUPS = { all: null, books: ["epub", "mobi", "azw3", "fb2"], pdf: ["pdf"], cbz: ["cbz"] };
+const FILTER_NAMES = { all: "All", books: "Books", pdf: "PDFs", cbz: "Comics" };
+
+function bookTile(b) {
+  const el = document.createElement("article");
+  el.className = "tile";
+  const pct = parseInt(localStorage.getItem(`progress-${b.id}-pct`), 10);
+  el.innerHTML = `
+    <div class="cover" title="${esc(b.title)}">
+      <div class="spine-title">${esc(b.title)}</div>
+      ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
+    </div>
+    ${pct > 0 && pct < 100 ? `<span class="tile-progress">${pct}%</span>` : ""}
+    <button class="tile-more" type="button" aria-haspopup="menu" aria-label="Actions — ${esc(b.title)}">⋯</button>`;
+  el.querySelector(".cover").onclick = () => openReader(b.id);
+  el.querySelector(".tile-more").onclick = (e) => { e.stopPropagation(); openMenu(bookMenuItems(b), e.currentTarget); };
+  return el;
+}
+
+function fillTiles(box, books) {
+  box.innerHTML = "";
+  for (const b of books) box.append(bookTile(b));
+}
+
 async function loadShelf(q = "") {
-  const grid = $("#grid");
-  grid.innerHTML = "";
-  $("#shelf-empty").hidden = true;
   const books = await api(`/api/books?q=${encodeURIComponent(q)}`);
-  if (!books.length) {
-    $("#shelf-empty").hidden = false;
-    return;
+  const filtered = shelfFilter ? books.filter((b) => EXT_GROUPS[shelfFilter].includes(b.ext)) : books;
+  $("#library-title").textContent = FILTER_NAMES[shelfFilter] || "All";
+  $("#library-count").textContent = filtered.length ? `${filtered.length} item${filtered.length > 1 ? "s" : ""}` : "";
+  $("#shelf-empty").innerHTML = q ? `No results for “${esc(q)}”.`
+    : `Nothing here yet.<small>Add books, or use the Book Store to pull them from Z-Library.</small>`;
+  $("#shelf-empty").hidden = !!filtered.length;
+  fillTiles($("#grid"), filtered);
+}
+
+/* ---------- context menu (⋯ on tiles) ---------- */
+const ctxMenu = $("#ctx-menu");
+let ctxAnchor = null;
+
+function openMenu(items, anchor) {
+  ctxMenu.innerHTML = "";
+  for (const it of items) {
+    if (it === "sep") { const s = document.createElement("div"); s.className = "menu-sep"; ctxMenu.append(s); continue; }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.setAttribute("role", "menuitem");
+    btn.textContent = it.label;
+    if (it.danger) btn.classList.add("danger");
+    btn.onclick = () => { closeMenu(); it.fn(); };
+    ctxMenu.append(btn);
   }
-  for (const b of books) {
-    const card = document.createElement("article");
-    card.className = "book-card";
-    card.innerHTML = `
-      <div class="cover" title="Read ${esc(b.title)}">
-        <div class="spine-title">${esc(b.title)}</div>
-        ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
-      </div>
-      <div class="book-meta">
-        <div class="book-title">${esc(b.title)}</div>
-        <div class="book-author">${esc(b.authors || "—")}</div>
-        ${b.shared_by ? `<div class="shared-by">shared by ${esc(b.shared_by)}</div>` : ""}
-        <span class="badge">${esc(b.ext)} · ${b.year || ""}</span>
-      </div>
-      <div class="book-actions">
-        <button class="btn-ghost" data-act="read">Read</button>
-        <button class="btn-ghost" data-act="download">Download</button>
-        ${(me_kindle && ["epub", "pdf"].includes(b.ext)) ? `<button class="btn-ghost" data-act="kindle">Kindle</button>` : ""}
-        ${b.own ? `<button class="btn-ghost" data-act="share">Share</button>
-        <button class="btn-danger" data-act="delete">✕</button>` : ""}
-      </div>`;
-    card.querySelector(".cover").onclick = () => openReader(b.id);
-    card.querySelector('[data-act="read"]').onclick = () => openReader(b.id);
-    card.querySelector('[data-act="download"]').onclick = (e) => downloadBook(e.currentTarget, b);
-    const kindleBtn = card.querySelector('[data-act="kindle"]');
-    if (kindleBtn) kindleBtn.onclick = (e) => sendToKindle(e.currentTarget, b);
-    const share = card.querySelector('[data-act="share"]');
-    if (share) share.onclick = () => shareBook(b);
-    const del = card.querySelector('[data-act="delete"]');
-    if (del) del.onclick = async () => {
-      if (confirm(`Remove "${b.title}" from your shelf?`)) {
-        await api(`/api/books/${b.id}`, { method: "DELETE" });
-        loadShelf($("#search").value);
-      }
-    };
-    grid.append(card);
-  }
+  ctxMenu.hidden = false;
+  ctxAnchor = anchor;
+  const r = anchor.getBoundingClientRect();
+  const w = ctxMenu.offsetWidth, h = ctxMenu.offsetHeight;
+  ctxMenu.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+  let y = r.bottom + 4;
+  if (y + h > innerHeight - 8) y = Math.max(8, r.top - h - 4);
+  ctxMenu.style.top = `${y}px`;
+  ctxMenu.querySelector("button")?.focus();
+}
+
+function closeMenu() {
+  if (ctxMenu.hidden) return;
+  ctxMenu.hidden = true;
+  ctxAnchor?.focus();
+  ctxAnchor = null;
+}
+document.addEventListener("click", (e) => { if (!ctxMenu.contains(e.target)) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+function bookMenuItems(b) {
+  const items = [
+    { label: "Read", fn: () => openReader(b.id) },
+    { label: "Download", fn: () => downloadBook(null, b) },
+  ];
+  if (me_kindle && ["epub", "pdf"].includes(b.ext))
+    items.push({ label: "Send to Kindle…", fn: () => sendToKindle(null, b) });
+  if (b.own) items.push({ label: "Share…", fn: () => shareBook(b) });
+  items.push("sep", { label: "Add to Collection…", fn: () => openCollectionDialog(b) });
+  if (b.own) items.push("sep", { label: "Remove from shelf", danger: true, fn: async () => {
+    if (confirm(`Remove "${b.title}" from your shelf?`)) {
+      await api(`/api/books/${b.id}`, { method: "DELETE" });
+      rerenderView();
+    }
+  } });
+  return items;
 }
 
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => loadShelf(e.target.value), 250);
+  searchTimer = setTimeout(() => {
+    shelfFilter = null;  // search spans the whole library
+    show("library");
+  }, 250);
 };
 
 /* ---------- shelf download (streamed with progress) ---------- */
 async function downloadBook(btn, b) {
-  if (btn.disabled) return;
-  const orig = btn.textContent;
-  btn.disabled = true;
+  if (btn?.disabled) return;
+  if (btn) { btn.disabled = true; }
   try {
     const blob = await xhr("GET", `/api/books/${b.id}/file?dl=1`, { responseType: "blob",
       onProgress: (done, total) => {
-        btn.textContent = total ? `${Math.round((done / total) * 100)}%` : "…";
+        if (btn) btn.textContent = total ? `${Math.round((done / total) * 100)}%` : "…";
       } });
     const a = document.createElement("a");
     const url = URL.createObjectURL(blob);
@@ -169,8 +215,7 @@ async function downloadBook(btn, b) {
   } catch (err) {
     alert(`Download failed: ${err.message}`);
   }
-  btn.disabled = false;
-  btn.textContent = orig;
+  if (btn) { btn.disabled = false; btn.textContent = "Download"; }
 }
 
 /* ---------- upload ---------- */
@@ -270,17 +315,18 @@ async function doKindleSend(b, device, fail) {
 }
 
 async function sendToKindle(btn, b) {
-  if (btn.disabled) return;
-  const orig = btn.textContent;
+  if (btn?.disabled) return;
   if (me_devices.length > 1) { renderKindleDialog(b); return; }
-  btn.disabled = true;
-  btn.textContent = "Sending…";
+  if (!me_devices.length) { alert("Add a Kindle device first (Settings → Kindle devices)."); return; }
+  if (btn) { btn.disabled = true; btn.textContent = "Sending…"; }
   if (await doKindleSend(b, me_devices[0], (m) => alert(`Send failed: ${m}`))) {
-    btn.textContent = "Sent ✓";
-    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 4000);
-  } else {
+    if (btn) {
+      btn.textContent = "Sent ✓";
+      setTimeout(() => { btn.disabled = false; btn.textContent = "Kindle"; }, 4000);
+    }
+  } else if (btn) {
     btn.disabled = false;
-    btn.textContent = orig;
+    btn.textContent = "Kindle";
   }
 }
 
@@ -308,19 +354,168 @@ function renderKindleDialog(b) {
 $("#kindle-close").onclick = () => $("#kindle-dialog").close();
 
 /* ---------- find (z-library / anna's archive) ---------- */
-$("#tab-shelf").onclick = () => switchTab("shelf");
-$("#tab-find").onclick = () => switchTab("find");
-function switchTab(tab) {
-  $("#shelf-view").hidden = tab !== "shelf";
-  $("#find-view").hidden = tab !== "find";
-  $("#admin-view").hidden = tab !== "admin";
-  $("#tab-shelf").classList.toggle("active", tab === "shelf");
-  $("#tab-find").classList.toggle("active", tab === "find");
-  $("#tab-settings").classList.toggle("active", tab === "admin");
-  if (tab === "shelf") loadShelf($("#search").value);
-  else if (tab === "find") showQuota();
-  else if (tab === "admin") setAdminTab(adminTab);
+/* ---------- navigation ---------- */
+let currentView = "home";
+let currentCollectionId = null;
+const VIEW_ELS = { home: "#home-view", store: "#store-view", library: "#library-view", admin: "#admin-view" };
+
+function show(view, collectionId = null) {
+  currentView = view;
+  if (collectionId != null) currentCollectionId = collectionId;
+  const elKey = view === "collection" ? "library" : view;  // collection shares the library pane
+  for (const [k, sel] of Object.entries(VIEW_ELS)) $(sel).hidden = k !== elKey;
+  document.querySelectorAll(".side-link").forEach((b) => {
+    const on = b.dataset.view === view
+      && (view !== "library" || b.dataset.filter === (shelfFilter || "all"))
+      && (view !== "collection" || +b.dataset.cid === currentCollectionId);
+    b.classList.toggle("active", on);
+  });
+  $("#collection-actions").hidden = view !== "collection";
+  if (view === "home") loadHome();
+  else if (view === "store") showStore();
+  else if (view === "library") loadShelf($("#search").value);
+  else if (view === "collection") loadCollection();
+  else if (view === "admin") setAdminTab(adminTab);
 }
+
+function rerenderView() {
+  if (currentView === "home") loadHome();
+  else if (currentView === "library") loadShelf($("#search").value);
+  else if (currentView === "collection") loadCollection();
+}
+
+document.querySelectorAll(".side-link[data-view]").forEach((b) => {
+  b.onclick = () => {
+    if (b.dataset.view === "library") shelfFilter = b.dataset.filter === "all" ? null : b.dataset.filter;
+    show(b.dataset.view, b.dataset.cid ? +b.dataset.cid : null);
+  };
+});
+$("#tab-settings").onclick = () => show("admin");
+
+/* ---------- collections ---------- */
+let collections = [];
+
+async function loadCollections() {
+  try { collections = await api("/api/collections"); }
+  catch { return; }  // signed out
+  const box = $("#side-collections");
+  box.innerHTML = "";
+  for (const c of collections) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "side-link";
+    btn.dataset.view = "collection";
+    btn.dataset.cid = c.id;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>${esc(c.name)}`;
+    btn.onclick = () => show("collection", c.id);
+    box.append(btn);
+  }
+}
+
+async function loadCollection() {
+  try {
+    const c = await api(`/api/collections/${currentCollectionId}`);
+    $("#library-title").textContent = c.name;
+    $("#library-count").textContent = c.books.length ? `${c.books.length} item${c.books.length > 1 ? "s" : ""}` : "";
+    $("#shelf-empty").innerHTML = `No books in this collection.<small>Use the ⋯ menu on a book cover to add it.</small>`;
+    $("#shelf-empty").hidden = !!c.books.length;
+    fillTiles($("#grid"), c.books);
+  } catch {  // deleted elsewhere or not ours — fall back to All
+    show("library");
+  }
+}
+
+function promptDialog(title, initial = "") {
+  return new Promise((resolve) => {
+    const dlg = $("#prompt-dialog");
+    $("#prompt-title").textContent = title;
+    $("#prompt-input").value = initial;
+    const onClose = () => { dlg.removeEventListener("close", onClose); resolve(dlg.returnValue === "ok" ? $("#prompt-input").value.trim() : null); };
+    dlg.addEventListener("close", onClose);
+    dlg.showModal();
+    $("#prompt-input").focus();
+  });
+}
+
+$("#nav-new-collection").onclick = async () => {
+  const name = await promptDialog("New collection");
+  if (!name) return;
+  try {
+    const c = await api("/api/collections", { method: "POST", json: { name } });
+    await loadCollections();
+    show("collection", c.id);
+  } catch (e) { alert(e.message); }
+};
+
+$("#collection-rename").onclick = async () => {
+  const c = collections.find((x) => x.id === currentCollectionId);
+  if (!c) return;
+  const name = await promptDialog("Rename collection", c.name);
+  if (!name || name === c.name) return;
+  try {
+    await api(`/api/collections/${c.id}`, { method: "PATCH", json: { name } });
+    loadCollections();
+    loadCollection();
+  } catch (e) { alert(e.message); }
+};
+
+$("#collection-delete").onclick = async () => {
+  const c = collections.find((x) => x.id === currentCollectionId);
+  if (!c || !confirm(`Delete collection "${c.name}"? Books stay on your shelf.`)) return;
+  try {
+    await api(`/api/collections/${c.id}`, { method: "DELETE" });
+    loadCollections();
+    show("library");
+  } catch (e) { alert(e.message); }
+};
+
+let collectBookId = null;
+
+async function openCollectionDialog(b) {
+  collectBookId = b.id;
+  $("#collection-error").textContent = "";
+  try {
+    const cols = await api(`/api/collections?book_id=${b.id}`);
+    const box = $("#collection-list");
+    box.innerHTML = "";
+    if (!cols.length) box.innerHTML = `<p class="result-sub">No collections yet — create one below.</p>`;
+    for (const c of cols) {
+      const row = document.createElement("label");
+      row.className = "check-row collection-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!c.member;
+      cb.onchange = async () => {
+        try {
+          if (cb.checked) await api(`/api/collections/${c.id}/books`, { method: "POST", json: { book_id: b.id } });
+          else await api(`/api/collections/${c.id}/books/${b.id}`, { method: "DELETE" });
+          loadCollections();
+          rerenderView();
+        } catch (e) { cb.checked = !cb.checked; $("#collection-error").textContent = e.message; }
+      };
+      row.append(cb, document.createTextNode(` ${c.name} `));
+      const n = document.createElement("span");
+      n.className = "result-sub";
+      n.textContent = c.book_count ? `(${c.book_count})` : "(empty)";
+      row.append(n);
+      box.append(row);
+    }
+    $("#collection-dialog").showModal();
+  } catch (e) { alert(e.message); }
+}
+
+$("#collection-close").onclick = () => $("#collection-dialog").close();
+$("#collection-create-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const name = $("#collection-new-name").value.trim();
+  if (!name) return;
+  try {
+    await api("/api/collections", { method: "POST", json: { name } });
+    $("#collection-new-name").value = "";
+    await loadCollections();
+    if (collectBookId) openCollectionDialog({ id: collectBookId });  // re-render with the new collection
+  } catch (e) { $("#collection-error").textContent = e.message; }
+};
 
 /* rows carry `source: "annas"` from the annas search; absent = z-library.
    Quota lines are z-lib only — anna's archive has no quota endpoint. */
@@ -349,15 +544,53 @@ $("#src-zlib").onclick = () => setSource("zlib");
 $("#src-annas").onclick = () => setSource("annas");
 applySourceUI(findSource = localStorage.getItem("findSource") === "annas" ? "annas" : "zlib");
 
+/* ---------- book store ---------- */
+function showStore() {
+  $("#zlib-error").textContent = "";
+  renderSourceCards();
+  if (findSource === "zlib") showQuota();
+}
+
+function sourceCard(name, status, extra = "") {
+  return `<div class="source-card">
+    <h3>${esc(name)}</h3>
+    <p class="source-status">${esc(status)}</p>
+    ${extra}
+  </div>`;
+}
+
+function renderSourceCards() {
+  const s = me_sources, admin = me_role === "admin";
+  $("#source-cards").innerHTML =
+    (s.zlib
+      ? sourceCard("Z-Library", `Connected${s.zlib_domain ? ` · ${s.zlib_domain}` : ""}`,
+          `<p class="result-sub" id="store-zlib-quota">Checking daily quota…</p>`)
+      : sourceCard("Z-Library", "Not configured",
+          `<p class="result-sub">${admin
+            ? "Add the shared account under Settings → App settings → Z-Library account."
+            : "Ask the admin to add the shared Z-Library account."}</p>`))
+    + (s.annas
+      ? sourceCard("Anna's Archive", `Member key configured${s.annas_base ? ` · ${s.annas_base}` : ""}`,
+          `<p class="result-sub">Free accounts download via slow partner servers automatically.</p>`)
+      : sourceCard("Anna's Archive", "Not configured",
+          `<p class="result-sub">${admin
+            ? "Add a secret key under Settings → App settings → Anna's Archive — no membership needed; downloads fall back to free partner servers."
+            : "Ask the admin to configure Anna's Archive."}</p>`));
+  $("#src-zlib").hidden = !s.zlib;
+  $("#src-annas").hidden = !s.annas;
+  $("#store-toolbar").hidden = !s.zlib && !s.annas;
+  if (!s[findSource]) setSource(s.zlib ? "zlib" : "annas");  // current source vanished
+}
+
 async function showQuota() {
   if (findSource !== "zlib") return;
   const src = findSource;  // the reply may land after the user switched sources
-  $("#zlib-error").textContent = "";
   try {
     const l = await api("/api/zlib/limits");
     if (findSource !== src) return;
-    $("#zlib-error").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
-  } catch { /* unconfigured — surfaced on search */ }
+    const el = $("#store-zlib-quota");
+    if (el) el.textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads left`;
+  } catch { if (el) el.textContent = ""; /* unconfigured — surfaced on search */ }
 }
 
 let zlibTimer;
@@ -629,6 +862,42 @@ $("#downloads-dialog").addEventListener("close", () => refreshQueue());  // re-e
 /* ---------- reader ---------- */
 function openReader(id) { location.assign(`/reader.html?id=${id}`); }
 
+/* ---------- home ---------- */
+async function loadHome() {
+  const books = await api("/api/books");
+  const total = books.length;
+  const bytes = books.reduce((s, b) => s + (b.size || 0), 0);
+  const fromStore = books.filter((b) => b.source === "zlibrary" || b.source === "annas-archive").length;
+  const shared = books.filter((b) => b.shared_by).length;
+  const stats = [
+    ["Books on shelf", String(total)],
+    ["Library size", fmtBytes(bytes) || "0 kB"],
+    ["From the store", String(fromStore)],
+    ["Shared with me", String(shared)],
+  ];
+  $("#home-stats").innerHTML = stats.map(([label, num]) =>
+    `<div class="stat"><div class="stat-num">${esc(num)}</div><div class="stat-label">${esc(label)}</div></div>`).join("");
+  $("#home-empty").hidden = !!total;
+  const pct = (b) => parseInt(localStorage.getItem(`progress-${b.id}-pct`), 10);
+  const reading = books.filter((b) => pct(b) > 0 && pct(b) < 100);
+  $("#home-reading-sec").hidden = !reading.length;
+  fillTiles($("#reading-strip"), reading);
+  const recent = books.slice(0, 12);
+  $("#home-recent-sec").hidden = !recent.length;
+  fillTiles($("#recent-strip"), recent);
+  const line = $("#home-queue-line");
+  try {
+    const { jobs } = await api("/api/zlib/queue");
+    const active = jobs.filter((j) => !QUEUE_TERMINAL.includes(j.status)).length;
+    const failed = jobs.filter((j) => j.status === "failed").length;
+    const parts = [];
+    if (active) parts.push(`${active} download${active > 1 ? "s" : ""} in progress`);
+    if (failed) parts.push(`${failed} failed — open Downloads to retry`);
+    line.textContent = parts.join(" · ");
+    line.hidden = !parts.length;
+  } catch { line.hidden = true; }
+}
+
 /* ---------- boot ---------- */
 async function boot() {
   if (!token()) {
@@ -650,7 +919,9 @@ async function boot() {
     // devices but no send button => admin SMTP missing; say why instead of a dead-end
     $("#smtp-hint").hidden = !(me_devices.length && !me_kindle);
     me_id = me.id;
-    loadShelf();
+    me_sources = me.sources || me_sources;
+    loadCollections();
+    show("home");
     refreshQueue();  // badge + resume polling if jobs are active
   } catch { /* 401 handled in api() */ }
 }
@@ -661,7 +932,6 @@ boot();
 let adminTab = "devices";
 let zhPage = 1, zhTotal = 1;
 
-$("#tab-settings").onclick = () => switchTab("admin");
 document.querySelectorAll(".admin-tab").forEach((b) => {
   b.onclick = () => setAdminTab(b.dataset.tab);
 });

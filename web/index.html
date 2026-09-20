@@ -21,124 +21,186 @@
 </section>
 
 <section id="app-view" hidden>
-  <header>
-    <h1 class="wordmark">Bookplate<span>.</span></h1>
-    <button class="btn-ghost active" id="tab-shelf" type="button">My shelf</button>
-    <button class="btn-ghost" id="tab-find" type="button" title="Search Z-Library">Find books</button>
-    <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
-    <button class="btn-ghost" id="tab-settings" type="button" hidden>Settings</button>
-    <span class="spacer"></span>
-    <button class="btn-primary" id="upload-btn" type="button">Add books</button>
-    <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
-    <span id="user-name" class="result-sub"></span>
-    <button class="btn-ghost" id="logout-btn" type="button">Sign out</button>
-  </header>
+  <div class="shell">
 
-  <main>
-    <div id="shelf-view">
-      <div class="toolbar">
-        <input type="text" id="search" placeholder="Search title, author, category…" autocomplete="off">
+    <nav class="sidebar" aria-label="Main">
+      <h1 class="wordmark">Bookplate<span>.</span></h1>
+      <input type="search" id="search" placeholder="Search library" autocomplete="off" aria-label="Search library">
+
+      <button class="side-link" id="nav-home" data-view="home" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5M5 9.5V21h5v-6h4v6h5V9.5"/></svg>
+        Home</button>
+      <button class="side-link" id="nav-store" data-view="store" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8h12l1.2 13H4.8L6 8zM9 10V7a3 3 0 0 1 6 0v3"/></svg>
+        Book Store</button>
+
+      <div class="side-heading">Library</div>
+      <button class="side-link" data-view="library" data-filter="all" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h4v16H4zM10 4h4v16h-4zM16.2 5.2l3.9 1-3.9 14.6-3.9-1z"/></svg>
+        All</button>
+      <button class="side-link" data-view="library" data-filter="books" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14zM4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
+        Books</button>
+      <button class="side-link" data-view="library" data-filter="pdf" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h9l5 5v15H6zM14 2v6h6"/></svg>
+        PDFs</button>
+      <button class="side-link" data-view="library" data-filter="cbz" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM3 15l5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="8.5" r="1.5"/></svg>
+        Comics</button>
+
+      <div class="side-heading">My Collections</div>
+      <div id="side-collections"></div>
+      <button class="side-link" id="nav-new-collection" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        New Collection</button>
+
+      <div class="side-spacer"></div>
+      <div class="side-foot">
+        <span id="user-name" class="result-sub"></span>
+        <button class="btn-ghost" id="logout-btn" type="button">Sign out</button>
       </div>
-      <div class="grid" id="grid"></div>
-      <div class="empty" id="shelf-empty" hidden>Your shelf is empty.<small>Add books, or use Find books to pull them from Z-Library.</small></div>
-    </div>
+    </nav>
 
-    <div id="find-view" hidden>
-      <div class="toolbar">
-        <div class="source-toggle" role="group" aria-label="Search source">
-          <button type="button" id="src-zlib" class="btn-ghost active">Z-Library</button>
-          <button type="button" id="src-annas" class="btn-ghost">Anna's Archive</button>
+    <div class="content">
+      <header>
+        <span class="spacer"></span>
+        <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
+        <button class="btn-ghost" id="tab-settings" type="button" hidden>Settings</button>
+        <button class="btn-primary" id="upload-btn" type="button">Add books</button>
+        <input type="file" id="file-input" class="visually-hidden" multiple accept=".pdf,.epub,.mobi,.azw3,.fb2,.cbz">
+      </header>
+
+      <main>
+        <div id="home-view">
+          <div class="view-head"><h2>Home</h2></div>
+          <div class="stats" id="home-stats"></div>
+          <p class="result-sub" id="home-queue-line" hidden></p>
+          <section class="home-section" id="home-reading-sec" hidden>
+            <h3>Continue reading</h3>
+            <div class="strip" id="reading-strip"></div>
+          </section>
+          <section class="home-section" id="home-recent-sec" hidden>
+            <h3>Recently added</h3>
+            <div class="strip" id="recent-strip"></div>
+          </section>
+          <div class="empty" id="home-empty" hidden>Your shelf is empty.<small>Add books, or use the Book Store to pull them from Z-Library.</small></div>
         </div>
-        <input type="text" id="zlib-search" placeholder="Search Z-Library…" autocomplete="off">
-      </div>
-      <div class="error-line" id="zlib-error"></div>
-      <div class="results" id="zlib-results"></div>
+
+        <div id="store-view" hidden>
+          <div class="view-head"><h2>Book Store</h2></div>
+          <div class="source-cards" id="source-cards"></div>
+          <div class="toolbar" id="store-toolbar">
+            <div class="source-toggle" role="group" aria-label="Search source">
+              <button type="button" id="src-zlib" class="btn-ghost active">Z-Library</button>
+              <button type="button" id="src-annas" class="btn-ghost">Anna's Archive</button>
+            </div>
+            <input type="text" id="zlib-search" placeholder="Search Z-Library…" autocomplete="off">
+          </div>
+          <div class="error-line" id="zlib-error"></div>
+          <div class="results" id="zlib-results"></div>
+        </div>
+
+        <div id="library-view" hidden>
+          <div class="view-head">
+            <h2 id="library-title">All</h2>
+            <span class="result-sub" id="library-count"></span>
+            <span class="view-actions" id="collection-actions" hidden>
+              <button class="btn-ghost" id="collection-rename" type="button">Rename</button>
+              <button class="btn-ghost" id="collection-delete" type="button">Delete</button>
+            </span>
+          </div>
+          <div class="grid" id="grid"></div>
+          <div class="empty" id="shelf-empty" hidden></div>
+        </div>
+
+        <div id="admin-view" hidden>
+          <div class="admin-tabs" role="tablist">
+            <button class="btn-ghost admin-tab active" data-tab="devices" type="button">Kindle devices</button>
+            <button class="btn-ghost admin-tab" data-tab="users" type="button" hidden>Users</button>
+            <button class="btn-ghost admin-tab" data-tab="settings" type="button" hidden>App settings</button>
+            <button class="btn-ghost admin-tab" data-tab="zlib" type="button" hidden>Z-Library</button>
+          </div>
+          <div class="error-line" id="admin-error" role="alert"></div>
+
+          <section id="admin-devices">
+            <form id="device-form" class="admin-row">
+              <input type="text" id="nd-label" placeholder="label, e.g. Kindle Paperwhite">
+              <input type="email" id="nd-email" placeholder="Kindle address, e.g. yourname_kindle@kindle.com" required>
+              <button class="btn-primary" type="submit">Add</button>
+            </form>
+            <div id="device-list" class="admin-table"></div>
+            <p class="result-sub" id="smtp-hint" hidden>Sending is disabled until the admin configures the SMTP gateway (App settings → Send to Kindle).</p>
+            <p class="result-sub">Devices are yours alone. Add the server's sender email to your Amazon account's "Approved Personal Document E-mail List" — find it in App settings if you're an admin, or ask the admin for it.</p>
+          </section>
+
+          <section id="admin-users">
+            <form id="admin-user-form" class="admin-row">
+              <input type="text" id="nu-user" placeholder="username" required>
+              <input type="password" id="nu-pass" placeholder="password" minlength="6" required>
+              <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
+              <button class="btn-primary" type="submit">Create</button>
+            </form>
+            <div id="admin-user-list" class="admin-table"></div>
+          </section>
+
+          <section id="admin-settings" hidden>
+            <form id="admin-settings-form">
+              <h3>Z-Library account</h3>
+              <input type="email" id="set-zlib-email" placeholder="z-lib account email">
+              <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password" autocomplete="new-password">
+                <button type="button" class="btn-ghost link" data-clear="zlib.password">clear</button></div>
+              <input type="url" id="set-zlib-domain" placeholder="mirror, e.g. https://z-lib.gd">
+              <h3>Anna's Archive</h3>
+              <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key" autocomplete="new-password">
+                <button type="button" class="btn-ghost link" data-clear="annas.secret_key">clear</button></div>
+              <input type="url" id="set-annas-base" placeholder="mirror, e.g. https://annas-archive.gd">
+              <h3>AI metadata assist</h3>
+              <label class="check-row"><input type="checkbox" id="set-ai-enabled"> enabled</label>
+              <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key" autocomplete="new-password">
+                <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
+              <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
+              <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
+              <h3>Send to Kindle — email gateway (server-wide)</h3>
+              <input type="email" id="set-kindle-from" placeholder="sender email — users add this to their Amazon approved-sender list">
+              <input type="text" id="set-kindle-host" placeholder="SMTP host, e.g. smtp.gmail.com">
+              <div class="secret-row"><input type="text" id="set-kindle-port" placeholder="SMTP port (default 587)">
+                <select id="set-kindle-security">
+                  <option value="starttls">STARTTLS</option>
+                  <option value="ssl">SSL/TLS</option>
+                  <option value="none">no encryption</option>
+                </select></div>
+              <input type="text" id="set-kindle-user" placeholder="SMTP username (optional)">
+              <div class="secret-row"><input type="password" id="set-kindle-password" placeholder="SMTP password" autocomplete="new-password">
+                <button type="button" class="btn-ghost link" data-clear="kindle.smtp_password">clear</button></div>
+              <p class="result-sub">Kindle accepts EPUB and PDF. Each user manages their own device addresses under Settings → Kindle devices.</p>
+              <h3>Registration</h3>
+              <select id="set-registration">
+                <option value="approval">new accounts need admin approval</option>
+                <option value="closed">registration closed</option>
+              </select>
+              <button class="btn-primary" id="settings-save" type="submit">Save settings</button>
+            </form>
+          </section>
+
+          <section id="admin-zlib" hidden>
+            <div id="zlib-admin-quota" class="result-sub"></div>
+            <h3>Download history</h3>
+            <div class="admin-pager"><button class="btn-ghost" id="zh-prev" type="button">←</button>
+              <span id="zh-page" class="result-sub"></span>
+              <button class="btn-ghost" id="zh-next" type="button">→</button></div>
+            <div id="zlib-history" class="admin-table"></div>
+            <h3>My library</h3>
+            <div id="zlib-library" class="admin-table"></div>
+            <h3>Booklists</h3>
+            <div id="zlib-booklists" class="admin-table"></div>
+          </section>
+        </div>
+      </main>
     </div>
-
-    <div id="admin-view" hidden>
-      <div class="admin-tabs" role="tablist">
-        <button class="btn-ghost admin-tab active" data-tab="devices" type="button">Kindle devices</button>
-        <button class="btn-ghost admin-tab" data-tab="users" type="button" hidden>Users</button>
-        <button class="btn-ghost admin-tab" data-tab="settings" type="button" hidden>App settings</button>
-        <button class="btn-ghost admin-tab" data-tab="zlib" type="button" hidden>Z-Library</button>
-      </div>
-      <div class="error-line" id="admin-error" role="alert"></div>
-
-      <section id="admin-devices">
-        <form id="device-form" class="admin-row">
-          <input type="text" id="nd-label" placeholder="label, e.g. Kindle Paperwhite">
-          <input type="email" id="nd-email" placeholder="Kindle address, e.g. yourname_kindle@kindle.com" required>
-          <button class="btn-primary" type="submit">Add</button>
-        </form>
-        <div id="device-list" class="admin-table"></div>
-        <p class="result-sub" id="smtp-hint" hidden>Sending is disabled until the admin configures the SMTP gateway (App settings → Send to Kindle).</p>
-        <p class="result-sub">Devices are yours alone. Add the server's sender email to your Amazon account's "Approved Personal Document E-mail List" — find it in App settings if you're an admin, or ask the admin for it.</p>
-      </section>
-
-      <section id="admin-users">
-        <form id="admin-user-form" class="admin-row">
-          <input type="text" id="nu-user" placeholder="username" required>
-          <input type="password" id="nu-pass" placeholder="password" minlength="6" required>
-          <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select>
-          <button class="btn-primary" type="submit">Create</button>
-        </form>
-        <div id="admin-user-list" class="admin-table"></div>
-      </section>
-
-      <section id="admin-settings" hidden>
-        <form id="admin-settings-form">
-          <h3>Z-Library account</h3>
-          <input type="email" id="set-zlib-email" placeholder="z-lib account email">
-          <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password" autocomplete="new-password">
-            <button type="button" class="btn-ghost link" data-clear="zlib.password">clear</button></div>
-          <input type="url" id="set-zlib-domain" placeholder="mirror, e.g. https://z-lib.gd">
-          <h3>Anna's Archive</h3>
-          <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key" autocomplete="new-password">
-            <button type="button" class="btn-ghost link" data-clear="annas.secret_key">clear</button></div>
-          <input type="url" id="set-annas-base" placeholder="mirror, e.g. https://annas-archive.gd">
-          <h3>AI metadata assist</h3>
-          <label class="check-row"><input type="checkbox" id="set-ai-enabled"> enabled</label>
-          <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key" autocomplete="new-password">
-            <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
-          <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
-          <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
-          <h3>Send to Kindle — email gateway (server-wide)</h3>
-          <input type="email" id="set-kindle-from" placeholder="sender email — users add this to their Amazon approved-sender list">
-          <input type="text" id="set-kindle-host" placeholder="SMTP host, e.g. smtp.gmail.com">
-          <div class="secret-row"><input type="text" id="set-kindle-port" placeholder="SMTP port (default 587)">
-            <select id="set-kindle-security">
-              <option value="starttls">STARTTLS</option>
-              <option value="ssl">SSL/TLS</option>
-              <option value="none">no encryption</option>
-            </select></div>
-          <input type="text" id="set-kindle-user" placeholder="SMTP username (optional)">
-          <div class="secret-row"><input type="password" id="set-kindle-password" placeholder="SMTP password" autocomplete="new-password">
-            <button type="button" class="btn-ghost link" data-clear="kindle.smtp_password">clear</button></div>
-          <p class="result-sub">Kindle accepts EPUB and PDF. Each user manages their own device addresses under Settings → Kindle devices.</p>
-          <h3>Registration</h3>
-          <select id="set-registration">
-            <option value="approval">new accounts need admin approval</option>
-            <option value="closed">registration closed</option>
-          </select>
-          <button class="btn-primary" id="settings-save" type="submit">Save settings</button>
-        </form>
-      </section>
-
-      <section id="admin-zlib" hidden>
-        <div id="zlib-admin-quota" class="result-sub"></div>
-        <h3>Download history</h3>
-        <div class="admin-pager"><button class="btn-ghost" id="zh-prev" type="button">←</button>
-          <span id="zh-page" class="result-sub"></span>
-          <button class="btn-ghost" id="zh-next" type="button">→</button></div>
-        <div id="zlib-history" class="admin-table"></div>
-        <h3>My library</h3>
-        <div id="zlib-library" class="admin-table"></div>
-        <h3>Booklists</h3>
-        <div id="zlib-booklists" class="admin-table"></div>
-      </section>
-    </div>
-  </main>
+  </div>
 </section>
+
+<div id="ctx-menu" class="menu" role="menu" hidden></div>
 
 <dialog id="kindle-dialog">
   <button class="btn-ghost detail-close" id="kindle-close" type="button" aria-label="Close">✕</button>
@@ -155,6 +217,29 @@
     <div style="display:flex; gap:8px; justify-content:flex-end">
       <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
       <button class="btn-primary" value="ok" id="share-ok" type="button">Share</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="collection-dialog">
+  <button class="btn-ghost detail-close" id="collection-close" type="button" aria-label="Close">✕</button>
+  <h2>Add to Collection</h2>
+  <div id="collection-list"></div>
+  <div class="error-line" id="collection-error" role="alert"></div>
+  <form id="collection-create-form" class="admin-row">
+    <input type="text" id="collection-new-name" placeholder="New collection name" autocomplete="off">
+    <button class="btn-primary" type="submit">Create</button>
+  </form>
+</dialog>
+
+<dialog id="prompt-dialog">
+  <form method="dialog">
+    <h2 id="prompt-title">Name</h2>
+    <input type="text" id="prompt-input" autocomplete="off">
+    <div class="error-line" id="prompt-error" role="alert"></div>
+    <div style="display:flex; gap:8px; justify-content:flex-end">
+      <button class="btn-ghost" value="cancel" type="submit">Cancel</button>
+      <button class="btn-primary" value="ok" id="prompt-ok" type="submit">OK</button>
     </div>
   </form>
 </dialog>
@@ -187,7 +272,7 @@
   <h2>Downloads</h2>
   <div id="downloads-quota" class="result-sub"></div>
   <div id="downloads-list"></div>
-  <div class="empty" id="downloads-empty" hidden>Nothing queued.<small>Use Find books, then "Get later" on a result.</small></div>
+  <div class="empty" id="downloads-empty" hidden>Nothing queued.<small>Use the Book Store, then "Get later" on a result.</small></div>
 </dialog>
 
 <dialog id="upload-dialog">
@@ -202,6 +287,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=6"></script>
+<script type="module" src="/app.js?v=7"></script>
 </body>
 </html>

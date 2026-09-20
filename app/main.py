@@ -3,6 +3,7 @@ import asyncio
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
@@ -95,7 +96,11 @@ def me(user=UserDep):
     devices = _devices(user["id"])
     return {"id": user["id"], "username": user["username"],
             "role": user["role"], "status": user["status"],
-            "kindle": bool(smtp_ready() and devices), "devices": devices}
+            "kindle": bool(smtp_ready() and devices), "devices": devices,
+            "sources": {"zlib": bool(settings.get("zlib.email") and settings.get("zlib.password")),
+                        "annas": bool(settings.get("annas.secret_key")),
+                        "zlib_domain": settings.get("zlib.domain"),
+                        "annas_base": settings.get("annas.base_url")}}
 
 
 # ---------- kindle devices (per-user) ----------
@@ -185,6 +190,10 @@ def list_books(q: str = "", user=UserDep):
     sql += " ORDER BY b.created_at DESC, b.id DESC"
     with db.conn() as con:
         rows = [dict(r) for r in con.execute(sql, params)]
+    return _with_cover_v(rows)
+
+
+def _with_cover_v(rows: list[dict]) -> list[dict]:
     # cover URL version = cover file mtime: covers are served immutable+1y, so a
     # re-render (backfill) must change the URL or browsers keep the old pixels
     for b in rows:
@@ -339,6 +348,119 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
             raise HTTPException(404, f"no user {req.username}")
         con.execute("INSERT OR IGNORE INTO shares(book_id, from_user, to_user) VALUES(?,?,?)",
                     (book_id, user["id"], to["id"]))
+    return {"ok": True}
+
+
+# ---------- collections (per-user shelves of visible books) ----------
+
+class CollectionReq(BaseModel):
+    name: str
+
+
+class BookIdReq(BaseModel):
+    book_id: int
+
+
+@app.get("/api/collections")
+def list_collections(user=UserDep, book_id: int | None = None):
+    """book_id optional: adds a `member` flag so the UI can render
+    add-to-collection checkboxes without per-collection probes."""
+    with db.conn() as con:
+        rows = con.execute(
+            """SELECT c.id, c.name, COUNT(cb2.book_id) AS book_count,
+                      EXISTS(SELECT 1 FROM collection_books cb
+                             WHERE cb.collection_id=c.id AND cb.book_id=:bid) AS member
+               FROM collections c LEFT JOIN collection_books cb2 ON cb2.collection_id=c.id
+               WHERE c.user_id=:uid GROUP BY c.id ORDER BY c.name COLLATE NOCASE""",
+            {"uid": user["id"], "bid": book_id if book_id is not None else -1}).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/collections")
+def create_collection(req: CollectionReq, user=UserDep):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    with db.conn() as con:
+        try:
+            cur = con.execute("INSERT INTO collections(user_id, name) VALUES(?,?)",
+                              (user["id"], name))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"collection '{name}' already exists")
+    return {"id": cur.lastrowid, "name": name, "book_count": 0}
+
+
+def _own_collection(con, collection_id: int, user_id: int):
+    if not con.execute("SELECT 1 FROM collections WHERE id=? AND user_id=?",
+                       (collection_id, user_id)).fetchone():
+        _raise404()
+
+
+@app.patch("/api/collections/{collection_id}")
+def rename_collection(collection_id: int, req: CollectionReq, user=UserDep):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "name required")
+    with db.conn() as con:
+        _own_collection(con, collection_id, user["id"])
+        try:
+            con.execute("UPDATE collections SET name=? WHERE id=?", (name, collection_id))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"collection '{name}' already exists")
+    return {"ok": True}
+
+
+@app.delete("/api/collections/{collection_id}")
+def delete_collection(collection_id: int, user=UserDep):
+    with db.conn() as con:
+        cur = con.execute("DELETE FROM collections WHERE id=? AND user_id=?",
+                          (collection_id, user["id"]))
+    if not cur.rowcount:
+        _raise404()
+    return {"ok": True}
+
+
+@app.get("/api/collections/{collection_id}")
+def get_collection(collection_id: int, user=UserDep):
+    with db.conn() as con:
+        c = con.execute("SELECT id, name FROM collections WHERE id=? AND user_id=?",
+                        (collection_id, user["id"])).fetchone()
+        if not c:
+            _raise404()
+        rows = [dict(r) for r in con.execute(
+            """SELECT b.*, EXISTS(SELECT 1 FROM user_books ub
+                    WHERE ub.user_id=:uid AND ub.book_id=b.id) AS own,
+                (SELECT u.username FROM shares s JOIN users u ON u.id=s.from_user
+                    WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by
+                FROM books b JOIN collection_books cb ON cb.book_id=b.id
+                WHERE cb.collection_id=:cid AND b.id IN (
+                  SELECT book_id FROM user_books WHERE user_id=:uid
+                  UNION SELECT book_id FROM shares WHERE to_user=:uid)
+                ORDER BY cb.added_at DESC, b.id DESC""",
+            {"uid": user["id"], "cid": collection_id})]
+    return {"id": c["id"], "name": c["name"], "books": _with_cover_v(rows)}
+
+
+@app.post("/api/collections/{collection_id}/books")
+def collection_add_book(collection_id: int, req: BookIdReq, user=UserDep):
+    with db.conn() as con:
+        _own_collection(con, collection_id, user["id"])
+        if not _book_visible(con, user["id"], req.book_id):
+            _raise404()
+        con.execute("INSERT OR IGNORE INTO collection_books(collection_id, book_id) VALUES(?,?)",
+                    (collection_id, req.book_id))
+    return {"ok": True}
+
+
+@app.delete("/api/collections/{collection_id}/books/{book_id}")
+def collection_remove_book(collection_id: int, book_id: int, user=UserDep):
+    with db.conn() as con:
+        cur = con.execute(
+            """DELETE FROM collection_books WHERE collection_id=? AND book_id=?
+               AND collection_id IN (SELECT id FROM collections WHERE id=? AND user_id=?)""",
+            (collection_id, book_id, collection_id, user["id"]))
+    if not cur.rowcount:
+        _raise404()
     return {"ok": True}
 
 
