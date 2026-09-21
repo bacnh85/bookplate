@@ -11,6 +11,28 @@ const book = await bookRes.json();
 $("#title").textContent = book.title || "";
 
 let view = null;
+let putTimer = null, pendingPos = null;
+function syncProgress() {  // also flushes on close — server never staler than localStorage
+  clearTimeout(putTimer);
+  putTimer = null;
+  if (!pendingPos) return;
+  const pos = pendingPos;
+  const body = JSON.stringify(pos);
+  headers["Content-Type"] = "application/json";
+  fetch(`/api/books/${id}/progress`, { method: "PUT", headers, body, keepalive: true })
+    .then(async (r) => {
+      if (r.status >= 400 && r.status < 500) { pendingPos = null; return; }  // rejected token/body — permanent
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);  // 5xx — transient
+      if (pendingPos === pos) pendingPos = null;
+      // anchor local clock to the server's — keeps newer-of resume skew-proof
+      const { updated_at } = await r.json().catch(() => ({}));
+      if (updated_at) localStorage.setItem(`${progressKey}-off`,
+        Date.parse(updated_at.replace(" ", "T") + "Z") - Date.now());
+    })
+    .catch(() => {  // network/5xx — retry, a dropped sync must not lose the position
+      putTimer = setTimeout(syncProgress, 2000);
+    });
+}
 let fontPx = parseFloat(localStorage.getItem("reader-font") || "17");
 
 function applyStyles() {
@@ -52,15 +74,28 @@ async function openFoliate(blob) {
   view.addEventListener("relocate", (e) => {
     const { cfi, fraction } = e.detail;
     const pct = Math.round((fraction ?? 0) * 100);
-    localStorage.setItem(progressKey, cfi);
-    // ponytail: progress is per-browser; server-side sync only if multi-device resume matters
+    localStorage.setItem(progressKey, cfi);  // instant/offline resume cache
     localStorage.setItem(`${progressKey}-pct`, String(pct));
+    localStorage.setItem(`${progressKey}-t`, String(Date.now()));
+    pendingPos = { cfi, pct };
+    clearTimeout(putTimer);
+    putTimer = setTimeout(syncProgress, 2000);
     $("#progress").textContent = `${pct}%`;
   });
 
-  await view.init({ lastLocation: localStorage.getItem(progressKey) });
-  if (!localStorage.getItem(progressKey)) view.goToTextStart?.();
+  // resume at the NEWER position (server syncs across devices, local wins when
+  // the last sync failed); offset re-anchors the local clock to the server's
+  const off = +(localStorage.getItem(`${progressKey}-off`) || 0);
+  const localT = (+(localStorage.getItem(`${progressKey}-t`) || 0)) + off;
+  const serverT = book.progress_at ? Date.parse(book.progress_at.replace(" ", "T") + "Z") : 0;
+  const cfi = serverT >= localT ? (book.progress_cfi || localStorage.getItem(progressKey))
+                                : localStorage.getItem(progressKey) || book.progress_cfi;
+  await view.init({ lastLocation: cfi });
+  if (!cfi) view.goToTextStart?.();  // brand-new book: no position anywhere
 }
+
+addEventListener("pagehide", syncProgress);
+document.addEventListener("visibilitychange", () => { if (document.hidden) syncProgress(); });
 
 if (book.ext === "pdf") {
   const iframe = document.createElement("iframe");

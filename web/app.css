@@ -13,6 +13,7 @@
   --font-body: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --fs-sm: 0.8125rem; --fs-base: 1rem; --fs-lg: 1.25rem; --fs-xl: 1.625rem; --fs-display: 2.5rem;
   --r-sm: 4px; --r-md: 8px;
+  --e-xs: 0 1px 2px rgba(38, 34, 28, 0.05);   /* books at rest — whisper shadow (DESIGN.md) */
   --e-sm: 0 1px 3px rgba(38, 34, 28, 0.08);
   --e-md: 0 4px 16px rgba(38, 34, 28, 0.12);
 }
@@ -130,27 +131,52 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
 .source-toggle .btn-ghost:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
 .source-toggle .btn-ghost.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .grid {
-  display: grid; gap: 24px;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  display: grid; gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
 }
 .tile { position: relative; }
-.tile .cover { border-radius: var(--r-sm); box-shadow: var(--e-sm); overflow: hidden; }
+/* 3D book, Apple-style: art is FULL-BLEED; the case (--cover-c = the art's own
+   edge colour) only shows through as letterbox bars, melting into the art; the
+   spine is a translucent overlay printed on the art (DESIGN.md book3d). */
+.tile .cover {
+  border-radius: 2px 6px 6px 2px; box-shadow: var(--e-xs); overflow: hidden;
+  background: var(--cover-c, var(--ink));
+}
+.tile .cover img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain;  /* bars take the case colour — seamless edge match */
+}
+.tile .cover::before {  /* spine: transparent-to-ink overlay, art shows through */
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 4.5%; z-index: 2;
+  background:
+    linear-gradient(90deg, rgba(255, 253, 248, 0.22), transparent 12%),
+    linear-gradient(90deg,
+      rgba(38, 34, 28, 0.30), rgba(38, 34, 28, 0.10) 55%,
+      rgba(38, 34, 28, 0.28) 75%, transparent 100%);
+  pointer-events: none;
+}
 .tile:hover .cover { box-shadow: var(--e-md); transform: translateY(-2px); }
 .tile .cover { transition: box-shadow 0.15s ease, transform 0.15s ease; }
+.tile-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 6px; min-height: 24px;
+}
 .tile-progress {
-  position: absolute; left: 8px; bottom: 8px;
-  font-size: var(--fs-sm); color: var(--ink); font-variant-numeric: tabular-nums;
-  background: var(--card); border-radius: var(--r-sm); box-shadow: var(--e-sm);
-  padding: 1px 6px;
+  font-size: var(--fs-sm); color: var(--ink-soft); font-variant-numeric: tabular-nums;
+}
+.tile-new {
+  font-size: var(--fs-sm); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--accent);
 }
 .tile-more {
-  position: absolute; right: 8px; bottom: 8px;
-  background: var(--card); color: var(--ink); border: 1px solid var(--line);
-  border-radius: 999px; width: 28px; height: 28px; padding: 0;
-  font-size: 1rem; line-height: 1; opacity: 0.65;
-  transition: opacity 0.15s ease;
+  background: none; border: 0; color: var(--ink-soft);
+  border-radius: 999px; width: 24px; height: 24px; padding: 0;
+  font-size: 1rem; line-height: 1; cursor: pointer;
+  transition: background 0.15s ease;
 }
-.tile-more:hover, .tile-more:focus-visible { opacity: 1; background: var(--card); }
+.tile-more:hover { background: var(--line); }
+.tile-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tile-more:disabled { opacity: 0.4; cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; }
 }
@@ -161,9 +187,11 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
 }
 .cover .spine-title {
   font-family: var(--font-display); font-size: var(--fs-base);
-  color: var(--ink-soft); line-height: 1.3;
+  color: var(--ink); line-height: 1.3;
+  /* legible on any case colour (shows only when the cover img failed) */
+  background: rgba(246, 243, 236, 0.85); border-radius: var(--r-sm); padding: 6px 8px;
 }
-.cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* library tiles: .tile .cover img insets the jacket inside the coloured case */
 .book-meta { padding: 12px; display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .book-title { font-size: 1rem; line-height: 1.3; }
 .book-author { font-size: var(--fs-sm); color: var(--ink-soft); }

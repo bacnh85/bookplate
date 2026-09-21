@@ -193,6 +193,40 @@ async def enrich(meta: dict) -> None:
             pass
 
 
+def cover_color(data: bytes, ext: str | None) -> str | None:
+    """Apple-style 3D case colour: the artwork's EDGE colour, so letterbox bars
+    and the backing melt invisibly into the art (full-bleed look). None → CSS ink."""
+    try:
+        ext = (ext or "").lower()  # EPUB item names keep original case ('cover.PNG')
+        if ext == "svg":  # generated covers: palette colour is in the markup
+            import re as _re
+            m = _re.search(r'rect[^>]*fill="(#[0-9a-fA-F]{6})"', data[:512].decode("utf-8", "ignore"))
+            if m:
+                return m.group(1).lower()
+        import pymupdf
+        doc = pymupdf.open(stream=data, filetype=ext or "jpg")
+        pix = doc[0].get_pixmap(matrix=pymupdf.Matrix(0.15, 0.15))
+        s, n, w, h = pix.samples, pix.n, pix.width, pix.height
+        bw = max(1, round(min(w, h) * 0.06))  # outer 6% band = the art's edge
+        tot = [0, 0, 0]
+        cnt = 0
+        for y in range(h):
+            edge_row = y < bw or y >= h - bw
+            for x in range(w):
+                if not edge_row and bw <= x < w - bw:
+                    continue
+                o = (y * w + x) * n
+                tot[0] += s[o]; tot[1] += s[o + 1]; tot[2] += s[o + 2]; cnt += 1
+        rgb = [c / cnt for c in tot]
+        lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+        if lum < 48:  # too-dark case swallows the spine shade — lift it
+            f = 60 / max(lum, 1)
+            rgb = [min(255, c * f) for c in rgb]
+        return "#%02x%02x%02x" % tuple(int(c) for c in rgb)
+    except Exception:
+        return None
+
+
 def generated_cover(title: str, authors: str, seed: str) -> bytes:
     """Deterministic SVG placeholder cover (DESIGN.md palette) — last resort so
     every book has a thumbnail. Stored with cover_ext='svg'."""

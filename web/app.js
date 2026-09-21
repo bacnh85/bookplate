@@ -102,18 +102,36 @@ let shelfFilter = null;  // null = All; "books" | "pdf" | "cbz"
 const EXT_GROUPS = { all: null, books: ["epub", "mobi", "azw3", "fb2"], pdf: ["pdf"], cbz: ["cbz"] };
 const FILTER_NAMES = { all: "All", books: "Books", pdf: "PDFs", cbz: "Comics" };
 
+const adopted = new Set();  // legacy localStorage progress already offered to the server
+
 function bookTile(b) {
   const el = document.createElement("article");
   el.className = "tile";
-  const pct = parseInt(localStorage.getItem(`progress-${b.id}-pct`), 10);
+  let pct = b.progress_pct;
+  if (pct == null) {  // pre-upgrade progress lived in this browser — show + adopt it
+    pct = parseInt(localStorage.getItem(`progress-${b.id}-pct`), 10) || null;
+    if (pct != null && !adopted.has(b.id)) {
+      adopted.add(b.id);
+      api(`/api/books/${b.id}/progress`, { method: "PUT", json: { cfi: "", pct } }).catch(() => {});
+    }
+  }
+  // pdfs never report progress — "New" would stick forever, so suppress it there
+  const isNew = b.ext !== "pdf" && pct == null
+    && (Date.now() - Date.parse(String(b.created_at).replace(" ", "T") + "Z")) / 864e5 < 14;
+  const progress =
+    pct == null ? (isNew ? `<span class="tile-new">New</span>` : "") :
+    pct >= 100 ? `<span class="tile-progress">Finished</span>` :
+    `<span class="tile-progress">${pct}%</span>`;
   el.innerHTML = `
     <div class="cover" title="${esc(b.title)}">
       <div class="spine-title">${esc(b.title)}</div>
       ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
     </div>
-    ${pct > 0 && pct < 100 ? `<span class="tile-progress">${pct}%</span>` : ""}
-    <button class="tile-more" type="button" aria-haspopup="menu" aria-label="Actions — ${esc(b.title)}">⋯</button>`;
+    <div class="tile-meta">${progress}
+      <button class="tile-more" type="button" aria-haspopup="menu" aria-label="Actions — ${esc(b.title)}">⋯</button>
+    </div>`;
   el.querySelector(".cover").onclick = () => openReader(b.id);
+  if (b.cover_color) el.querySelector(".cover").style.setProperty("--cover-c", b.cover_color);
   el.querySelector(".tile-more").onclick = (e) => { e.stopPropagation(); openMenu(bookMenuItems(b), e.currentTarget); };
   return el;
 }
@@ -1145,8 +1163,7 @@ async function loadHome() {
   $("#home-stats").innerHTML = stats.map(([label, num]) =>
     `<div class="stat"><div class="stat-num">${esc(num)}</div><div class="stat-label">${esc(label)}</div></div>`).join("");
   $("#home-empty").hidden = !!total;
-  const pct = (b) => parseInt(localStorage.getItem(`progress-${b.id}-pct`), 10);
-  const reading = books.filter((b) => pct(b) > 0 && pct(b) < 100);
+  const reading = books.filter((b) => (b.progress_pct ?? 0) > 0 && b.progress_pct < 100);
   $("#home-reading-sec").hidden = !reading.length;
   fillTiles($("#reading-strip"), reading);
   const recent = books.slice(0, 12);

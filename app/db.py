@@ -95,6 +95,15 @@ CREATE TABLE IF NOT EXISTS collection_books(
   added_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (collection_id, book_id)
 );
+-- per-user reading position (epub CFI + percent); server-synced from the reader
+CREATE TABLE IF NOT EXISTS reading_progress(
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  cfi TEXT NOT NULL DEFAULT '',
+  pct INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, book_id)
+);
 -- per-user API tokens for external tools / MCP clients (hash-only at rest)
 CREATE TABLE IF NOT EXISTS api_tokens(
   id INTEGER PRIMARY KEY,
@@ -163,6 +172,9 @@ def init() -> None:
             c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
         if "status" not in ucols:
             c.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        bcols = {r["name"] for r in c.execute("PRAGMA table_info(books)")}
+        if "cover_color" not in bcols:
+            c.execute("ALTER TABLE books ADD COLUMN cover_color TEXT")
         # at-least-one-admin invariant: an upgraded DB (everyone role='user') with
         # registration defaulting to 'approval' would deadlock — nobody could approve
         # or reach /api/admin/*. Promote the earliest ACTIVE account. (Debris

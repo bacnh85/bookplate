@@ -202,8 +202,11 @@ def list_books(q: str = "", user=UserDep):
     sql = """SELECT b.*, EXISTS(SELECT 1 FROM user_books ub
                  WHERE ub.user_id=:uid AND ub.book_id=b.id) AS own,
              (SELECT u.username FROM shares s JOIN users u ON u.id=s.from_user
-                 WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by
-             FROM books b WHERE b.id IN (
+                 WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by,
+             rp.pct AS progress_pct
+             FROM books b LEFT JOIN reading_progress rp
+                 ON rp.book_id=b.id AND rp.user_id=:uid
+             WHERE b.id IN (
                SELECT book_id FROM user_books WHERE user_id=:uid
                UNION SELECT book_id FROM shares WHERE to_user=:uid)"""
     params: dict = {"uid": user["id"]}
@@ -234,8 +237,38 @@ def get_book(book_id: int, user=UserDep):
     with db.conn() as con:
         if not _book_visible(con, user["id"], book_id):
             raise HTTPException(404, "not found")
-        row = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        row = con.execute(
+            """SELECT b.*, rp.cfi AS progress_cfi, rp.pct AS progress_pct,
+                      rp.updated_at AS progress_at
+               FROM books b LEFT JOIN reading_progress rp
+                   ON rp.book_id=b.id AND rp.user_id=?
+               WHERE b.id=?""", (user["id"], book_id)).fetchone()
         return dict(row) if row else _raise404()
+
+
+class ProgressReq(BaseModel):
+    cfi: str = Field(default="", max_length=512)  # real CFIs are <200 chars
+    pct: int
+
+
+@app.put("/api/books/{book_id}/progress")
+def put_progress(book_id: int, req: ProgressReq, user=UserDep):
+    """Reading position sync from the reader. Per-user; upsert."""
+    pct = max(0, min(100, req.pct))
+    with db.conn() as con:
+        if not _book_visible(con, user["id"], book_id):
+            raise HTTPException(404, "not found")
+        con.execute(
+            """INSERT INTO reading_progress(user_id, book_id, cfi, pct, updated_at)
+               VALUES(?,?,?,?,datetime('now'))
+               ON CONFLICT(user_id, book_id)
+               DO UPDATE SET cfi=excluded.cfi, pct=excluded.pct,
+                             updated_at=datetime('now')""",
+            (user["id"], book_id, req.cfi, pct))
+        # server timestamp returned so clients can anchor their clock (skew-proof resume)
+        ts = con.execute("SELECT updated_at FROM reading_progress WHERE user_id=? AND book_id=?",
+                         (user["id"], book_id)).fetchone()["updated_at"]
+    return {"ok": True, "updated_at": ts}
 
 
 def _raise404():
@@ -273,13 +306,14 @@ async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
                 meta["cover_ext"] = "svg"
             size = tmp.stat().st_size
             store_file(tmp, sha, tmp.suffix.lstrip(".").lower())
+            ccolor = metadata.cover_color(meta["cover"], meta["cover_ext"]) if meta["cover"] else None
             cur = con.execute(
                 """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
-                   categories, description, year, cover_ext, source, added_by)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   categories, description, year, cover_ext, cover_color, source, added_by)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (sha, tmp.suffix.lstrip(".").lower(), size, meta["title"], _norm_title(meta["title"]),
                  meta["authors"], meta["isbn"], meta["language"], meta["categories"],
-                 meta["description"], meta["year"], meta["cover_ext"], source, user_id))
+                 meta["description"], meta["year"], meta["cover_ext"], ccolor, source, user_id))
             if meta["cover"]:
                 cover_path(sha, meta["cover_ext"] or "jpg").write_bytes(meta["cover"])
             book = dict(con.execute("SELECT * FROM books WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -492,6 +526,7 @@ def _write_cover(sha: str, meta: dict, old_ext: str | None) -> str | None:
         return None
     ext = meta.get("cover_ext") or "jpg"
     cover_path(sha, ext).write_bytes(meta["cover"])
+    meta["cover_color"] = metadata.cover_color(meta["cover"], ext)
     if old_ext and old_ext != ext:
         cover_path(sha, old_ext).unlink(missing_ok=True)
     return ext
@@ -517,7 +552,8 @@ async def remetadata_book(book_id: int, req: RemetaReq, user=UserDep):
             assignments = ", ".join(f"{k}=?" for k in sets)
             con.execute(f"UPDATE books SET {assignments} WHERE id=?", (*sets.values(), book_id))
         if ext:
-            con.execute("UPDATE books SET cover_ext=? WHERE id=?", (ext, book_id))
+            con.execute("UPDATE books SET cover_ext=?, cover_color=? WHERE id=?",
+                        (ext, meta.get("cover_color"), book_id))
         row = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
         after = {k: row[k] for k in META_FIELDS}
         changed = [k for k in META_FIELDS if (before[k] or None) != (after[k] or None)]
@@ -540,7 +576,8 @@ async def refetch_cover(book_id: int, user=UserDep):
         ext = _write_cover(b["sha256"], meta, b["cover_ext"])
     if ext:
         with db.conn() as con:
-            con.execute("UPDATE books SET cover_ext=? WHERE id=?", (ext, book_id))
+            con.execute("UPDATE books SET cover_ext=?, cover_color=? WHERE id=?",
+                        (ext, meta.get("cover_color"), book_id))
         return {"updated": True, "cover_ext": ext}
     return {"updated": False}
 
@@ -625,8 +662,10 @@ def get_collection(collection_id: int, user=UserDep):
             """SELECT b.*, EXISTS(SELECT 1 FROM user_books ub
                     WHERE ub.user_id=:uid AND ub.book_id=b.id) AS own,
                 (SELECT u.username FROM shares s JOIN users u ON u.id=s.from_user
-                    WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by
+                    WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by,
+                rp.pct AS progress_pct
                 FROM books b JOIN collection_books cb ON cb.book_id=b.id
+                LEFT JOIN reading_progress rp ON rp.book_id=b.id AND rp.user_id=:uid
                 WHERE cb.collection_id=:cid AND b.id IN (
                   SELECT book_id FROM user_books WHERE user_id=:uid
                   UNION SELECT book_id FROM shares WHERE to_user=:uid)
