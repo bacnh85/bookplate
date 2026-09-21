@@ -20,8 +20,10 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 **Interface**
 - Apple Books–style UI: sidebar navigation (Home, Book Store, Library filters,
   My Collections), 3D book tiles — full-bleed cover art on an edge-matched case
-  with a slim spine and soft shadow — a progress / NEW row under each cover,
-  and a Home page with library stats, Continue reading and Recently added.
+  with a slim spine and soft shadow — and a Home page with library stats,
+  Continue reading and Recently added. Under each cover: your progress (or a
+  NEW badge) plus a `⋯` menu (Read, Download, Send to Kindle, Share,
+  Add to Collection, Remove).
 - **Reading progress, synced**: the reader saves your position (epub CFI +
   percent) to the server as you read; tiles show your place (3% / Finished / NEW),
   resume works across devices and browsers (newest position wins), and Home's
