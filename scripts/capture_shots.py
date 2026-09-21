@@ -128,21 +128,11 @@ def main():
             cdp.js("document.querySelector('#auth-submit').click()")
             assert wait_for(cdp, "!!document.querySelector('#home-stats .stat')", 15), "home never rendered"
             time.sleep(2.0)
-            # headless quirk: lazy/eager cover images never dispatch here —
-            # recreate each img node so the browser must fetch it
-            cdp.js("document.querySelectorAll('.cover img').forEach(i => { "
-                   "const s = i.src; i.removeAttribute('loading'); "
-                   "const n = i.cloneNode(true); n.src = s; i.replaceWith(n); });")
+            # headless Chrome can defer lazy images past the screenshot —
+            # force the covers eager so tiles render with real art
+            cdp.js("document.querySelectorAll('.cover img[loading=lazy]')"
+                   ".forEach(i => { i.loading = 'eager'; });")
             time.sleep(1.5)
-            diag = cdp.js("JSON.stringify({vis: document.visibilityState, "
-                          "loaded: [...document.querySelectorAll('.cover img')].filter(i => i.complete && i.naturalWidth > 0).length, "
-                          "reqs: performance.getEntriesByType('resource').filter(r => r.name.includes('/cover')).length})")
-            print("  diag:", diag)
-            diag = cdp.js("JSON.stringify({imgs: document.querySelectorAll('.cover img').length, "
-                          "loaded: [...document.querySelectorAll('.cover img')].filter(i => i.complete && i.naturalWidth > 0).length, "
-                          "reqs: performance.getEntriesByType('resource').filter(r => r.name.includes('/cover')).length, "
-                          "sample: (document.querySelector('.cover img')||{}).src})")
-            print("  diag:", diag)
             for name, nav_js, settle, extra in SHOTS:
                 if nav_js:
                     cdp.js(nav_js)
