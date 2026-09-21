@@ -245,9 +245,10 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
   margin: 0 0 12px;
 }
 .strip {
-  display: flex; gap: 16px; overflow-x: auto; padding: 4px 4px 12px;
+  display: grid; gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  padding: 4px 4px 12px;
 }
-.strip .tile { width: 150px; flex-shrink: 0; }
 
 /* ---------- book store ---------- */
 .source-cards {
