@@ -86,9 +86,12 @@ def main():
     args = ap.parse_args()
     base, out = args.base.rstrip("/"), ROOT / "docs/images"
     out.mkdir(exist_ok=True)
+    import os
+    password = os.environ.get("BOOKPLATE_ADMIN_PASS") or (
+        ROOT / "data/initial_admin_password").read_text().strip()
     token = admin_token(base)
 
-    prof = "/tmp/bookplate-shots-profile"
+    prof = f"/tmp/bookplate-shots-profile-{time.time_ns()}"  # fresh: stale profiles break image fetches
     subprocess.run(["pkill", "-f", "remote-debugging-port=9223"], capture_output=True)
     chrome = subprocess.Popen(
         [CHROME, "--headless=new", "--remote-debugging-port=9223",
@@ -117,9 +120,29 @@ def main():
             print(f"capturing from {base}")
             cdp.cmd("Page.navigate", url=f"{base}/")
             time.sleep(1.5)
-            cdp.js(f"localStorage.setItem('token', {json.dumps(token)})")
-            cdp.cmd("Page.navigate", url=f"{base}/")
+            # log in through the real form: the session cookie it sets is what
+            # later authenticates <img> cover requests (a localStorage token
+            # alone does not ride along on image fetches)
+            cdp.js("document.querySelector('#auth-user').value = 'admin'")
+            cdp.js(f"document.querySelector('#auth-pass').value = {json.dumps(password)}")
+            cdp.js("document.querySelector('#auth-submit').click()")
             assert wait_for(cdp, "!!document.querySelector('#home-stats .stat')", 15), "home never rendered"
+            time.sleep(2.0)
+            # headless quirk: lazy/eager cover images never dispatch here —
+            # recreate each img node so the browser must fetch it
+            cdp.js("document.querySelectorAll('.cover img').forEach(i => { "
+                   "const s = i.src; i.removeAttribute('loading'); "
+                   "const n = i.cloneNode(true); n.src = s; i.replaceWith(n); });")
+            time.sleep(1.5)
+            diag = cdp.js("JSON.stringify({vis: document.visibilityState, "
+                          "loaded: [...document.querySelectorAll('.cover img')].filter(i => i.complete && i.naturalWidth > 0).length, "
+                          "reqs: performance.getEntriesByType('resource').filter(r => r.name.includes('/cover')).length})")
+            print("  diag:", diag)
+            diag = cdp.js("JSON.stringify({imgs: document.querySelectorAll('.cover img').length, "
+                          "loaded: [...document.querySelectorAll('.cover img')].filter(i => i.complete && i.naturalWidth > 0).length, "
+                          "reqs: performance.getEntriesByType('resource').filter(r => r.name.includes('/cover')).length, "
+                          "sample: (document.querySelector('.cover img')||{}).src})")
+            print("  diag:", diag)
             for name, nav_js, settle, extra in SHOTS:
                 if nav_js:
                     cdp.js(nav_js)
@@ -138,10 +161,9 @@ def main():
             cdp.js("document.querySelector('#ai-send').click()")
             if wait_for(cdp, "document.querySelectorAll('.ai-action').length > 0", 75):
                 time.sleep(1.0)
+                cdp.shot(out / "ai-chat.png")   # replaced only on a healthy turn
             else:
-                print("  WARNING: AI turn produced no action card — "
-                      "ai-chat.png may show a failed turn; re-run the capture")
-            cdp.shot(out / "ai-chat.png")
+                print("  ai-chat.png SKIPPED — no action card; previous shot kept")
             cdp.js("document.querySelector('#ai-close').click()")
 
             # Settings → API: token created, shown-once box visible
