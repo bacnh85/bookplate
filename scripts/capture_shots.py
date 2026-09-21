@@ -138,6 +138,9 @@ def main():
             cdp.js("document.querySelector('#ai-send').click()")
             if wait_for(cdp, "document.querySelectorAll('.ai-action').length > 0", 75):
                 time.sleep(1.0)
+            else:
+                print("  WARNING: AI turn produced no action card — "
+                      "ai-chat.png may show a failed turn; re-run the capture")
             cdp.shot(out / "ai-chat.png")
             cdp.js("document.querySelector('#ai-close').click()")
 
