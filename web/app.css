@@ -513,3 +513,34 @@ div.queue-cover.generated {
 #admin-user-form { flex-direction: row; align-items: center; gap: 8px; border-bottom: none; }
 #admin-user-form input[type="email"] { flex: 1; }
 #admin-user-form input, #admin-user-form select { width: auto; }
+
+/* ---- reader themes: token overrides, same warm hue family (DESIGN.md) ---- */
+:root {
+  --sepia-paper: #EFE8D8; --sepia-card: #F7F1E2; --sepia-ink: #3D3428;
+  --sepia-ink-soft: #544C3E; --sepia-line: #DCD2BC;
+  --night-paper: #211D18; --night-card: #2A251E; --night-ink: #D8D2C4;
+  --night-ink-soft: #D6CFBF; --night-line: #3A342B; --night-accent: #EAC8C8;
+  --night-accent-dk: #F0D2D2; --night-accent-ink: #211D18; --night-danger: #F4C4C4;
+}
+body[data-theme="sepia"] {
+  --paper: var(--sepia-paper);
+  --card: var(--sepia-card);
+  --ink: var(--sepia-ink);
+  --ink-soft: var(--sepia-ink-soft);
+  --line: var(--sepia-line);
+}
+body[data-theme="night"] {
+  color-scheme: dark;
+  --paper: var(--night-paper);
+  --card: var(--night-card);
+  --ink: var(--night-ink);
+  --ink-soft: var(--night-ink-soft);
+  --line: var(--night-line);
+  --accent: var(--night-accent);
+  --accent-dk: var(--night-accent-dk);
+  --accent-ink: var(--night-accent-ink);
+  --danger: var(--night-danger);
+}
+@media (prefers-reduced-motion: no-preference) {
+  body[data-theme] { transition: background-color .25s ease, color .25s ease; }
+}

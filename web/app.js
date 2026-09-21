@@ -115,8 +115,7 @@ function bookTile(b) {
       api(`/api/books/${b.id}/progress`, { method: "PUT", json: { cfi: "", pct } }).catch(() => {});
     }
   }
-  // pdfs never report progress — "New" would stick forever, so suppress it there
-  const isNew = b.ext !== "pdf" && pct == null
+  const isNew = pct == null
     && (Date.now() - Date.parse(String(b.created_at).replace(" ", "T") + "Z")) / 864e5 < 14;
   const progress =
     pct == null ? (isNew ? `<span class="tile-new">New</span>` : "") :

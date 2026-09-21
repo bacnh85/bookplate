@@ -12,27 +12,78 @@
     background: var(--card); border-bottom: 1px solid var(--line); flex-wrap: wrap;
   }
   #title { flex: 1; font-family: var(--font-display); font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #seek-row { padding: 4px 16px 0; background: var(--card); border-bottom: 1px solid var(--line); }
+  #seek { display: block; width: 100%; height: 4px; margin: 0 0 4px; appearance: none; -webkit-appearance: none;
+          background: var(--line); border-radius: 2px; cursor: pointer; }
+  #seek::-webkit-slider-thumb { appearance: none; -webkit-appearance: none; width: 16px; height: 16px;
+          border-radius: 50%; background: var(--accent); border: 0; }
+  #seek::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 0; }
+  #seek:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   #viewer { flex: 1; position: relative; overflow: hidden; }
   #viewer foliate-view { display: block; width: 100%; height: 100%; }
   #viewer iframe { width: 100%; height: 100%; border: 0; }
   .zone { position: absolute; top: 0; bottom: 0; width: 25%; z-index: 5; }
   #zone-left { left: 0; } #zone-right { right: 0; }
-  #progress { font-size: var(--fs-sm); color: var(--ink-soft); min-width: 3.5em; text-align: right; }
+  #progress { font-size: var(--fs-sm); color: var(--ink-soft); min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
   select { font: inherit; max-width: 180px; }
   #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--ink-soft); font-family: var(--font-display); }
+  #type-wrap { position: relative; }
+  #type-panel {
+    position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; width: 224px;
+    display: grid; gap: 12px; padding: 16px;
+    background: var(--card); border-radius: var(--r-md); box-shadow: var(--e-md);
+  }
+  #type-panel label { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+                      font-size: var(--fs-sm); color: var(--ink-soft); }
+  #type-panel .row { display: flex; gap: 4px; }
+  /* PDF pages are raster canvases — themes apply as colour filters on the rendered book */
+  body.reading-pdf[data-theme="night"] #viewer foliate-view { filter: invert(0.92) hue-rotate(180deg); }
+  body.reading-pdf[data-theme="sepia"] #viewer foliate-view { filter: sepia(0.35); }
 </style>
 </head>
 <body>
 <div id="toolbar">
   <a class="btn-ghost" href="/" style="text-decoration:none; padding:8px 16px; display:inline-block">← Bookplate</a>
   <div id="title">…</div>
+  <select id="theme" aria-label="Theme">
+    <option value="day">Day</option>
+    <option value="sepia">Sepia</option>
+    <option value="night">Night</option>
+  </select>
+  <span id="type-wrap">
+    <button class="btn-ghost" id="type-btn" type="button" aria-label="Typography">Aa</button>
+    <div id="type-panel" hidden>
+      <label>Font <select id="font-family">
+        <option value="serif">Iowan Serif</option>
+        <option value="georgia">Georgia</option>
+        <option value="sans">Sans</option>
+      </select></label>
+      <label>Size <span class="row">
+        <button class="btn-ghost" id="font-dec" type="button" aria-label="Smaller text">A−</button>
+        <button class="btn-ghost" id="font-inc" type="button" aria-label="Larger text">A+</button>
+      </span></label>
+      <label>Leading <select id="line-height">
+        <option value="1.5">Tight</option>
+        <option value="1.6">Normal</option>
+        <option value="1.8">Loose</option>
+      </select></label>
+      <label>Margin <select id="page-margin">
+        <option value="16">Narrow</option>
+        <option value="48">Normal</option>
+        <option value="96">Wide</option>
+      </select></label>
+      <label>Layout <select id="flow">
+        <option value="paginated">Pages</option>
+        <option value="scrolled">Scroll</option>
+      </select></label>
+    </div>
+  </span>
   <select id="toc" hidden><option value="">Contents…</option></select>
-  <button class="btn-ghost" id="font-dec" type="button" aria-label="Smaller text">A−</button>
-  <button class="btn-ghost" id="font-inc" type="button" aria-label="Larger text">A+</button>
   <button class="btn-ghost" id="prev" type="button" aria-label="Previous page">‹</button>
   <button class="btn-ghost" id="next" type="button" aria-label="Next page">›</button>
   <span id="progress"></span>
 </div>
+<div id="seek-row"><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Reading position"></div>
 <div id="viewer">
   <div class="zone" id="zone-left" hidden></div>
   <div class="zone" id="zone-right" hidden></div>
