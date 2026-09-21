@@ -13,6 +13,8 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 ![Book detail with description and related books](docs/images/book-detail.png)
 
+![Ask AI — natural-language store search with a one-click queue proposal](docs/images/ai-chat.png)
+
 ## Features
 
 **Interface**
@@ -22,12 +24,22 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   library stats, Continue reading and Recently added.
 - **My Collections**: create your own collections in the sidebar and file any
   book on your shelf — including ones shared with you — into them.
+- **Ask AI** (optional): a chat that knows your shelf. Ask it to find books
+  (it searches the configured stores and offers one-click *Add to queue*),
+  organize your shelf into collections, recommend what to read next, or answer
+  "do I have…?" questions. Every action is a confirmation card you apply —
+  the AI proposes, you approve. Uses the same OpenAI-compatible endpoint as
+  metadata assist (Admin → Settings).
 
 **Library**
 - Upload PDF, EPUB, MOBI, AZW3, FB2, CBZ — drag-and-drop or file picker, sequential
   batch uploads with per-file progress.
 - **Automatic metadata**: embedded metadata → filename parsing → Google Books /
   Open Library enrichment → optional AI fallback (any OpenAI-compatible endpoint).
+- **Fix metadata & thumbnails in place**: ask the AI ("fix book 11's title with
+  the hint …") or use the API — re-runs the whole extraction/enrichment chain on
+  an existing book, updates search instantly, and re-fetches the cover
+  (embedded art → PDF page-1 → Google/OL → deterministic placeholder last resort).
 - **Content-addressed storage** (SHA-256): re-uploading the same file dedups
   instantly; a *logical* duplicate (same normalized title + author, different file)
   is flagged so you can compare scans.
@@ -77,6 +89,13 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 - **Per-user shelf**: users only see books they uploaded or that were shared with
   them; sharing is per user.
 - All users share one Z-Library account and its daily download quota (FIFO queue).
+- **API tokens & MCP**: every user can create personal bearer tokens
+  (`bp_…`, hashed at rest, shown once, revocable under Settings → API) that
+  unlock the whole REST API for external tools, and an MCP server at `/mcp`
+  (streamable HTTP, same token) exposes the library to AI agents: search,
+  metadata, collections, store queueing, metadata/cover repair.
+
+![API tokens — per-user bearer tokens for external tools and MCP agents](docs/images/api-tokens.png)
 
 **Admin panel** (in-app, admin only)
 - **Users**: create, approve, enable/disable, set role, reset password.
@@ -266,6 +285,10 @@ Add keys via **Admin → Settings** — no restart needed.
 ```bash
 .venv/bin/python scripts/selftest.py      # e2e checks against a running server
 .venv/bin/python scripts/test_admin.py    # settings + roles/approval (offline)
+.venv/bin/python scripts/test_ai.py       # AI chat: tool loop, actions parser (offline)
+.venv/bin/python scripts/test_tokens.py   # API tokens + bearer auth (offline)
+.venv/bin/python scripts/test_mcp.py      # MCP server round-trip (live local server)
+node scripts/test_ai_ui.mjs               # AI action cards (behavioral, no browser)
 .venv/bin/python scripts/test_zlib.py     # z-lib adapter + EAPI probe (offline)
 .venv/bin/python scripts/test_annas.py    # Anna's Archive adapter (offline)
 ```

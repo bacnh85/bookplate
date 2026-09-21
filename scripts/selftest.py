@@ -350,13 +350,17 @@ def main():
         masked = r.json() if r.status_code == 200 else {}
         check("settings GET masks secrets", r.status_code == 200
               and set(masked.get("zlib.password", {})) == {"set", "hint"}, r.text[:160])
+        _m = masked.get("ai.model")  # not a secret — plain string in the GET
+        orig_model = _m if isinstance(_m, str) else ""
         r = cx.put("/api/admin/settings", headers=auth_super,
-                   json={"values": {"ai.model": "glm-5.3-flash", "registration": "closed"}})
+                   json={"values": {"ai.model": "selftest-throwaway-model",
+                                    "registration": "closed"}})
         check("settings PUT writes", r.status_code == 200, r.text[:120])
         r = cx.post("/api/auth/register", json={"username": f"closed-{rand}@t.io", "password": PASS})
         check("closed registration rejects", r.status_code == 403, str(r.status_code))
         r = cx.put("/api/admin/settings", headers=auth_super,
-                   json={"values": {"registration": "approval"}})
+                   json={"values": {"registration": "approval", **({"ai.model": orig_model}
+                                       if orig_model else {})}})
         check("settings PUT restores approval", r.status_code == 200, r.text[:120])
         r = cx.put("/api/admin/settings", headers=auth_super,
                    json={"values": {"not.a.key": "x"}})

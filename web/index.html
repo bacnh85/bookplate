@@ -67,6 +67,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <span class="spacer"></span>
+        <button class="btn-ghost" id="ai-btn" type="button" hidden>Ask AI</button>
         <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
         <button class="btn-ghost" id="tab-settings" type="button" hidden>Settings</button>
         <button class="btn-primary" id="upload-btn" type="button">Add books</button>
@@ -119,6 +120,7 @@
         <div id="admin-view" hidden>
           <div class="admin-tabs" role="tablist">
             <button class="btn-ghost admin-tab active" data-tab="devices" type="button">Kindle devices</button>
+            <button class="btn-ghost admin-tab" data-tab="api" type="button">API</button>
             <button class="btn-ghost admin-tab" data-tab="users" type="button" hidden>Users</button>
             <button class="btn-ghost admin-tab" data-tab="settings" type="button" hidden>App settings</button>
             <button class="btn-ghost admin-tab" data-tab="zlib" type="button" hidden>Z-Library</button>
@@ -161,8 +163,8 @@
               <label class="check-row"><input type="checkbox" id="set-ai-enabled"> enabled</label>
               <div class="secret-row"><input type="password" id="set-ai-key" placeholder="API key" autocomplete="new-password">
                 <button type="button" class="btn-ghost link" data-clear="ai.api_key">clear</button></div>
-              <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/openai/v1)">
-              <input type="text" id="set-ai-model" placeholder="model (default glm-5.3-flash)">
+              <input type="url" id="set-ai-base" placeholder="base URL (default https://api.z.ai/api/paas/v4)">
+              <input type="text" id="set-ai-model" placeholder="model (default glm-4.6)">
               <h3>Send to Kindle — email gateway (server-wide)</h3>
               <input type="email" id="set-kindle-from" placeholder="sender email — users add this to their Amazon approved-sender list">
               <input type="text" id="set-kindle-host" placeholder="SMTP host, e.g. smtp.gmail.com">
@@ -196,6 +198,21 @@
             <div id="zlib-library" class="admin-table"></div>
             <h3>Booklists</h3>
             <div id="zlib-booklists" class="admin-table"></div>
+          </section>
+
+          <section id="admin-api" hidden>
+            <h3>API tokens</h3>
+            <p class="result-sub">Let external tools and AI agents act as you over the REST API
+              (<code>Authorization: Bearer &lt;token&gt;</code>) and the MCP endpoint
+              (<code>/mcp</code>). Tokens are shown once and stored hashed — copy them when you
+              create them. An agent can do everything you can, so treat tokens like passwords.</p>
+            <form id="token-form" class="admin-row">
+              <input type="text" id="token-label" placeholder="label, e.g. Claude">
+              <button class="btn-primary" type="submit">Create token</button>
+            </form>
+            <div id="token-shown" class="result-sub token-shown" hidden></div>
+            <div id="token-list" class="admin-table"></div>
+            <div class="empty" id="token-empty" hidden>No tokens.<small>Create one to let an external tool call the API.</small></div>
           </section>
         </div>
       </main>
@@ -289,6 +306,22 @@
   <div id="downloads-quota" class="result-sub"></div>
   <div id="downloads-list"></div>
   <div class="empty" id="downloads-empty" hidden>Nothing queued.<small>Use the Book Store, then "Get later" on a result.</small></div>
+</dialog>
+
+<dialog id="ai-dialog">
+  <button class="btn-ghost detail-close" id="ai-close" type="button" aria-label="Close">✕</button>
+  <h2>Ask AI</h2>
+  <div id="ai-messages" aria-live="polite"></div>
+  <div id="ai-starters" hidden>
+    <button class="btn-ghost ai-starter" type="button">Find me recent space operas</button>
+    <button class="btn-ghost ai-starter" type="button">Organize my shelf into collections</button>
+    <button class="btn-ghost ai-starter" type="button">What should I read next?</button>
+  </div>
+  <div class="error-line" id="ai-error" role="alert"></div>
+  <form id="ai-form">
+    <input type="text" id="ai-input" placeholder="Ask about your library, or find books to queue…" autocomplete="off">
+    <button class="btn-primary" id="ai-send" type="submit">Send</button>
+  </form>
 </dialog>
 
 <dialog id="upload-dialog">

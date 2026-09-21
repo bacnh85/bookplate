@@ -129,6 +129,40 @@ def main():
                     time.sleep(0.5)
                 cdp.shot(out / name)
 
+            # Ask AI: a real store-search turn → queue action card
+            cdp.js("document.querySelector('#ai-btn').click()")
+            time.sleep(0.5)
+            cdp.js("document.querySelector('#ai-input').value = "
+                   "'Search Z-Library for \\u201cthe pragmatic programmer\\u201d "
+                   "and propose one edition to queue.'")
+            cdp.js("document.querySelector('#ai-send').click()")
+            if wait_for(cdp, "document.querySelectorAll('.ai-action').length > 0", 75):
+                time.sleep(1.0)
+            cdp.shot(out / "ai-chat.png")
+            cdp.js("document.querySelector('#ai-close').click()")
+
+            # Settings → API: token created, shown-once box visible
+            cdp.js("document.querySelector('#tab-settings').click()")
+            cdp.js("document.querySelector('.admin-tab[data-tab=\"api\"]').click()")
+            time.sleep(1.0)
+            cdp.js("document.querySelector('#token-label').value = 'Claude Desktop'")
+            cdp.js("document.querySelector('#token-form .btn-primary').click()")
+            if wait_for(cdp, "!!document.querySelector('#token-shown code')", 10):
+                time.sleep(0.5)
+                # redact: never publish a live token in a committed screenshot
+                cdp.js("document.querySelector('#token-shown code').textContent = "
+                       "'bp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  (copied)'")
+            cdp.shot(out / "api-tokens.png")
+            # cleanup: revoke the screenshot token so no live credential lingers
+            token = admin_token(base)
+            req = urllib.request.Request(f"{base}/api/tokens", headers={
+                "Authorization": f"Bearer {token}"})
+            for t in json.load(urllib.request.urlopen(req)):
+                if t["label"] == "Claude Desktop":
+                    urllib.request.urlopen(urllib.request.Request(
+                        f"{base}/api/tokens/{t['id']}", method="DELETE",
+                        headers={"Authorization": f"Bearer {token}"}))
+
             # book detail: live z-lib search -> first result row (skipped when none)
             cdp.js("document.querySelector('#nav-store').click()")
             time.sleep(1.0)

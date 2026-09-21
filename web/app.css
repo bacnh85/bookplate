@@ -338,7 +338,8 @@ dialog h2 { margin: 0; font-size: var(--fs-lg); }
 
 .skeleton { background: linear-gradient(90deg, var(--line) 25%, var(--card) 50%, var(--line) 75%); background-size: 200% 100%; animation: shimmer 1.2s infinite; border-radius: var(--r-sm); }
 @keyframes shimmer { to { background-position: -200% 0; } }
-  * { transition: none !important; animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
 }
 
 /* ---------- progress bars, transfers, download queue ---------- */
@@ -382,6 +383,50 @@ div.queue-cover.generated {
 .queue-actions button { padding: 4px 10px; font-size: var(--fs-sm); }
 .queue-add { font-size: var(--fs-sm); padding: 2px 8px; }
 
+/* ---------- AI assistant chat ---------- */
+#ai-dialog {
+  width: min(560px, 94vw); height: min(640px, 85vh);
+}
+#ai-dialog[open] { display: flex; flex-direction: column; }
+#ai-dialog h2 { font-family: var(--font-display); padding-right: 40px; }
+#ai-messages {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 16px 0 8px;
+}
+.ai-msg {
+  max-width: 85%; padding: 8px 12px; border-radius: var(--r-md);
+  font-size: var(--fs-base); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.ai-user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+.ai-ai { align-self: flex-start; background: var(--paper); }
+.ai-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ai-action {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--card); border-radius: var(--r-sm); box-shadow: var(--e-sm);
+  padding: 8px 12px;
+}
+.ai-action-main { flex: 1; min-width: 0; }
+.ai-action-title { font-family: var(--font-display); font-size: var(--fs-base); }
+.ai-done { font-size: var(--fs-sm); color: var(--accent); font-style: italic; }
+.ai-warn { font-size: var(--fs-sm); color: var(--danger); font-style: italic; }
+.ai-diff { font-size: var(--fs-sm); color: var(--ink-soft); overflow-wrap: anywhere; }
+.ai-diff b { color: var(--ink); font-weight: 600; }
+.ai-action button { padding: 4px 10px; font-size: var(--fs-sm); flex: none; }
+.ai-typing { display: inline-flex; gap: 4px; padding: 12px 14px; }
+.ai-typing span {
+  width: 6px; height: 6px; border-radius: 999px; background: var(--ink-soft);
+  animation: ai-blink 1.2s infinite;
+}
+.ai-typing span:nth-child(2) { animation-delay: 0.2s; }
+.ai-typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes ai-blink { 0%, 60%, 100% { opacity: 0.3; } 30% { opacity: 1; } }
+#ai-starters { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+.ai-starter { font-size: var(--fs-sm); padding: 4px 10px; }
+#ai-form { flex-direction: row; gap: 8px; }
+#ai-form input { flex: 1; }
+
 /* ---------- upload dialog ---------- */
 #upload-dialog { width: min(480px, 94vw); }
 #upload-dialog h2 { font-family: var(--font-display); padding-right: 40px; }
@@ -407,7 +452,7 @@ div.queue-cover.generated {
   font-family: var(--font-display); font-size: var(--fs-lg); font-weight: 600;
   margin: 18px 0 4px; padding-top: 14px; border-top: 1px solid var(--line);
 }
-.admin-tabs { display: flex; gap: 0; margin: 8px 0 4px; }
+.admin-tabs { display: flex; gap: 0; margin: 8px 0 4px; flex-wrap: wrap; }
 .admin-tabs .btn-ghost { border-radius: 0; }
 .admin-tabs .btn-ghost:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
 .admin-tabs .btn-ghost:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }

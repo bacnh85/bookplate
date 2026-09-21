@@ -60,6 +60,12 @@ def make_token(user_id: int) -> str:
     )
 
 
+def make_api_token() -> tuple[str, str]:
+    """External-tool bearer token: raw `bp_…` shown once, sha256 hash stored."""
+    raw = "bp_" + secrets.token_urlsafe(32)
+    return raw, hashlib.sha256(raw.encode()).hexdigest()
+
+
 def _reject_inactive(row) -> None:
     """Pending/disabled accounts are locked out everywhere (JWT, cookie, OPDS Basic)."""
     if row["status"] == "pending":
@@ -91,6 +97,15 @@ def current_user(request: Request):
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
         token_str = header[7:]
+        if token_str.startswith("bp_"):  # API token (external tools / MCP clients)
+            h = hashlib.sha256(token_str.encode()).hexdigest()
+            row = conn().execute(
+                "SELECT u.* FROM api_tokens t JOIN users u ON u.id=t.user_id "
+                "WHERE t.token_hash=?", (h,)).fetchone()
+            if not row:
+                raise HTTPException(401, "invalid token")
+            _reject_inactive(row)
+            return row
     elif request.cookies.get("session"):
         token_str = request.cookies["session"]
     if token_str:

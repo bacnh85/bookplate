@@ -5,6 +5,7 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -12,11 +13,12 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from . import db, metadata, opds, settings
+from . import db, metadata, opds, settings, ai
 from .annas_client import AnnasConfigError, AnnasUnavailable, annas
 from .auth import AdminDep, UserDep, admin_required, hash_password, make_token, verify_password
+from .auth import make_api_token
 from .kindle import KindleError, smtp_ready, send as kindle_send
 from .storage import book_path, cover_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
@@ -33,7 +35,10 @@ async def lifespan(_app: FastAPI):
         con.execute("UPDATE download_jobs SET status='queued', next_attempt_at=NULL "
                     "WHERE status IN ('downloading','processing')")
     worker = asyncio.create_task(download_worker())
-    yield
+    # the mounted MCP app's session manager needs its lifespan run explicitly —
+    # FastAPI only runs the root app's lifespan, not mounted sub-apps'
+    async with mcp.session_manager.run():
+        yield
     worker.cancel()
     with suppress(asyncio.CancelledError):
         await worker
@@ -42,6 +47,24 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Ebook Manager", lifespan=lifespan)
 db.init()
 TMP_DIR.mkdir(exist_ok=True)
+# MCP server for external agents (token-authed) - mounted after db.init so the
+# tools can reach a live DB; wrapped in the bp_-token auth middleware.
+# One raw Starlette route: MCP clients hit exactly /mcp, and a Mount would not
+# match the bare path (only /mcp/<rest>); it must precede the static mount.
+from starlette.routing import Route  # noqa: E402
+from .mcp_server import mcp, mcp_app  # noqa: E402
+
+
+class _McpExact:
+    """ASGI wrapper (Starlette Route needs an app instance, not a function):
+    re-scopes the bare /mcp path so the inner app sees its '/' route."""
+
+    async def __call__(self, scope, receive, send):
+        scope = dict(scope, root_path=scope.get("root_path", "") + "/mcp", path="/")
+        await mcp_app(scope, receive, send)
+
+
+app.router.routes.append(Route("/mcp", _McpExact(), methods=["GET", "POST", "DELETE"]))
 
 
 # ---------- auth ----------
@@ -100,7 +123,8 @@ def me(user=UserDep):
             "sources": {"zlib": bool(settings.get("zlib.email") and settings.get("zlib.password")),
                         "annas": bool(settings.get("annas.secret_key")),
                         "zlib_domain": settings.get("zlib.domain"),
-                        "annas_base": settings.get("annas.base_url")}}
+                        "annas_base": settings.get("annas.base_url"),
+                        "ai": ai.ai_enabled()}}
 
 
 # ---------- kindle devices (per-user) ----------
@@ -336,6 +360,43 @@ def remove_book(book_id: int, user=UserDep):
     return {"ok": True}
 
 
+# ---------- API tokens (external tools / MCP clients; per-user bearer) ----------
+
+class TokenReq(BaseModel):
+    label: str = ""
+
+
+@app.post("/api/tokens")
+def token_create(req: TokenReq, user=UserDep):
+    label = req.label.strip()[:80]
+    raw, token_hash = make_api_token()
+    with db.conn() as con:
+        cur = con.execute("INSERT INTO api_tokens(user_id, token_hash, label) VALUES(?,?,?)",
+                          (user["id"], token_hash, label))
+        created = con.execute("SELECT created_at FROM api_tokens WHERE id=?",
+                              (cur.lastrowid,)).fetchone()["created_at"]
+    return {"token": raw, "id": cur.lastrowid, "label": label, "created_at": created}
+
+
+@app.get("/api/tokens")
+def token_list(user=UserDep):
+    with db.conn() as con:
+        rows = con.execute(
+            "SELECT id, label, created_at FROM api_tokens WHERE user_id=? ORDER BY id DESC",
+            (user["id"],)).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.delete("/api/tokens/{token_id}")
+def token_delete(token_id: int, user=UserDep):
+    with db.conn() as con:
+        cur = con.execute("DELETE FROM api_tokens WHERE id=? AND user_id=?",
+                          (token_id, user["id"]))
+        if cur.rowcount == 0:
+            _raise404()
+    return {"ok": True}
+
+
 class ShareReq(BaseModel):
     username: str
 
@@ -353,6 +414,135 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
         con.execute("INSERT OR IGNORE INTO shares(book_id, from_user, to_user) VALUES(?,?,?)",
                     (book_id, user["id"], to["id"]))
     return {"ok": True}
+
+
+# ---------- book metadata / cover management (owner or admin only) ----------
+
+META_FIELDS = ("title", "authors", "categories", "year", "description", "language", "isbn")
+
+
+class BookPatch(BaseModel):
+    title: str | None = None
+    authors: str | None = None
+    categories: str | None = None
+    year: int | None = None
+    description: str | None = None
+    language: str | None = None
+    isbn: str | None = None
+
+
+class RemetaReq(BaseModel):
+    query: str = ""
+
+
+def _editable_book(con, book_id: int, user):
+    """Visible book the requester may modify: uploader or admin (content-addressed
+    books are shared by reference — one edit applies to every viewer)."""
+    b = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+    if not b or not _book_visible(con, user["id"], book_id):
+        _raise404()
+    if b["added_by"] != user["id"] and user["role"] != "admin":
+        raise HTTPException(403, "only the uploader (or an admin) can modify this book")
+    return b
+
+
+@app.patch("/api/books/{book_id}")
+def update_book(book_id: int, req: BookPatch, user=UserDep):
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "nothing to update")
+    if "year" in fields and not 0 < fields["year"] < 3000:
+        raise HTTPException(400, "year out of range")
+    with db.conn() as con:
+        _editable_book(con, book_id, user)
+        if "title" in fields:
+            fields["title"] = fields["title"].strip()
+            if not fields["title"]:
+                del fields["title"]
+            else:
+                fields["norm_title"] = _norm_title(fields["title"])
+        if not fields:
+            raise HTTPException(400, "nothing to update")
+        sets = ", ".join(f"{k}=?" for k in fields)
+        con.execute(f"UPDATE books SET {sets} WHERE id=?", (*fields.values(), book_id))
+        row = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        return _with_cover_v([dict(row)])[0]
+
+
+async def _rerun_chain(b: dict, query: str) -> dict:
+    """Re-run the metadata chain on a stored book. `query` (an 'Author - Title'
+    hint, e.g. from the AI or the user) replaces the junk filename for parsing
+    and enrichment; without it the existing title/authors seed the search.
+    The chain mixes sync CPU parsing (zip reads, PDF raster) with async network —
+    run it whole in a worker thread with its own loop so the serving event loop
+    stays free."""
+    orig = query.strip() or (f"{b['authors']} - {b['title']}" if b["authors"] else b["title"])
+    path = book_path(b["sha256"], b["ext"])
+
+    def _run() -> dict:
+        return asyncio.run(metadata.build_metadata(path, orig))
+
+    return await asyncio.to_thread(_run)
+
+
+def _write_cover(sha: str, meta: dict, old_ext: str | None) -> str | None:
+    """Persist a found cover; returns the new cover_ext or None (nothing found —
+    existing cover left alone). Old file unlinked when the extension changes."""
+    if not meta.get("cover"):
+        return None
+    ext = meta.get("cover_ext") or "jpg"
+    cover_path(sha, ext).write_bytes(meta["cover"])
+    if old_ext and old_ext != ext:
+        cover_path(sha, old_ext).unlink(missing_ok=True)
+    return ext
+
+
+@app.post("/api/books/{book_id}/remetadata")
+async def remetadata_book(book_id: int, req: RemetaReq, user=UserDep):
+    with db.conn() as con:
+        b = dict(_editable_book(con, book_id, user))
+        before = {k: b[k] for k in META_FIELDS}
+    meta = await _rerun_chain(b, req.query)  # no conn held across the slow chain
+    sets: dict = {}
+    for k in META_FIELDS:
+        fresh = meta.get(k)
+        if fresh in (None, "", "Unknown title"):  # blank never wipes good data
+            continue
+        sets[k] = fresh
+    if "title" in sets:
+        sets["norm_title"] = _norm_title(sets["title"])
+    ext = _write_cover(b["sha256"], meta, b["cover_ext"])  # enrichment cover, if found
+    with db.conn() as con:
+        if sets:
+            assignments = ", ".join(f"{k}=?" for k in sets)
+            con.execute(f"UPDATE books SET {assignments} WHERE id=?", (*sets.values(), book_id))
+        if ext:
+            con.execute("UPDATE books SET cover_ext=? WHERE id=?", (ext, book_id))
+        row = con.execute("SELECT * FROM books WHERE id=?", (book_id,)).fetchone()
+        after = {k: row[k] for k in META_FIELDS}
+        changed = [k for k in META_FIELDS if (before[k] or None) != (after[k] or None)]
+    return {"before": before, "after": after, "changed": changed}
+
+
+@app.post("/api/books/{book_id}/cover")
+async def refetch_cover(book_id: int, user=UserDep):
+    with db.conn() as con:
+        b = dict(_editable_book(con, book_id, user))
+    meta = await _rerun_chain(b, "")
+    ext = _write_cover(b["sha256"], meta, b["cover_ext"])
+    if not ext:
+        cur = cover_path(b["sha256"], b["cover_ext"]) if b["cover_ext"] else None
+        if cur and cur.exists():
+            return {"updated": False}  # real cover already on disk — leave it
+        # app guarantee: every book looks like a book — deterministic placeholder
+        meta["cover"] = metadata.generated_cover(b["title"], b["authors"], b["sha256"])
+        meta["cover_ext"] = "svg"
+        ext = _write_cover(b["sha256"], meta, b["cover_ext"])
+    if ext:
+        with db.conn() as con:
+            con.execute("UPDATE books SET cover_ext=? WHERE id=?", (ext, book_id))
+        return {"updated": True, "cover_ext": ext}
+    return {"updated": False}
 
 
 # ---------- collections (per-user shelves of visible books) ----------
@@ -617,6 +807,124 @@ def annas_enqueue(req: ZlibQueueReq, user=UserDep):
 @app.delete("/api/annas/queue/{job_id}")
 def annas_queue_remove(job_id: int, user=UserDep):
     return zlib_queue_remove(job_id, user=user)
+
+
+# ---------- AI assistant chat ----------
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str = Field(max_length=8000)
+
+
+class ChatReq(BaseModel):
+    messages: list[ChatMessage]
+
+
+_AI_RATE: dict[int, list[float]] = {}
+
+
+def _ai_throttle(uid: int) -> bool:
+    """Sliding window: 10 chats/min/user. In-memory, single process — a chat
+    request costs the admin real money (paid completions + store searches)."""
+    now = time.monotonic()
+    hits = [t for t in _AI_RATE.get(uid, []) if now - t < 60]
+    ok = len(hits) < 10
+    if ok:
+        hits.append(now)
+    _AI_RATE[uid] = hits
+    return ok
+
+
+def _library_context(user_id: int) -> str:
+    """Compact shelf snapshot for the system prompt: visible books (own + shared,
+    same rule as /api/books), most recent first, capped at 200 lines."""
+    with db.conn() as con:
+        rows = con.execute(
+            """SELECT b.id, b.title, b.authors, b.categories, b.year, b.ext
+               FROM books b WHERE b.id IN (
+                 SELECT book_id FROM user_books WHERE user_id=:uid
+                 UNION SELECT book_id FROM shares WHERE to_user=:uid)
+               ORDER BY b.created_at DESC, b.id DESC LIMIT 200""",
+            {"uid": user_id}).fetchall()
+        total = con.execute(
+            """SELECT COUNT(*) FROM books b WHERE b.id IN (
+                 SELECT book_id FROM user_books WHERE user_id=:uid
+                 UNION SELECT book_id FROM shares WHERE to_user=:uid)""",
+            {"uid": user_id}).fetchone()[0]
+        colls = con.execute(
+            """SELECT c.id, c.name, COUNT(cb.book_id) AS n FROM collections c
+               LEFT JOIN collection_books cb ON cb.collection_id=c.id
+               WHERE c.user_id=:uid GROUP BY c.id ORDER BY c.name COLLATE NOCASE""",
+            {"uid": user_id}).fetchall()
+    lines = [f"{r['id']}|{r['title']}" + (f" — {r['authors']}" if r["authors"] else "")
+             + (f" [{r['categories']}]" if r["categories"] else "")
+             + (f" ({r['year']})" if r["year"] else "")
+             + (f" .{r['ext']}" if r["ext"] else "")
+             for r in rows]
+    coll_lines = [f"{c['id']}|{c['name']} ({c['n']} books)" for c in colls]
+    parts = []
+    if lines:
+        trunc = f"\n(shelf truncated — showing the {len(lines)} most recent of {total})" if total > len(lines) else ""
+        parts.append("User's shelf (id|title — authors [category] (year) .ext):\n"
+                     + "\n".join(lines) + trunc)
+    else:
+        parts.append("User's shelf is empty.")
+    if coll_lines:
+        parts.append("User's collections (id|name (count)):\n" + "\n".join(coll_lines))
+    return "\n\n".join(parts)
+
+
+@app.post("/api/ai/chat")
+async def ai_chat_endpoint(req: ChatReq, user=UserDep):
+    if not ai.ai_enabled():
+        raise HTTPException(403, "AI assist is not configured (Admin → Settings)")
+    if not _ai_throttle(user["id"]):
+        raise HTTPException(429, "too many AI requests — wait a minute")
+
+    async def search_store(query: str, source: str | None = None) -> list[dict]:
+        # configured-ness, not CLI presence: zlib.enabled only checks the binary
+        src = source or ("zlibrary" if settings.get("zlib.email") and settings.get("zlib.password")
+                         else "annas")
+        if src == "zlibrary":
+            return await zlib.search(query, count=8)
+        return await annas.search(query, count=8)
+
+    system = (
+        "You are the librarian of Bookplate, a self-hosted ebook library. Today is "
+        f"{datetime.now().strftime('%Y-%m-%d')}. "
+        "Help the user find books, organize their shelf into collections, and answer "
+        "questions about their library. Ground every claim about their shelf in the "
+        "context below — never invent book ids.\n\n"
+        + _library_context(user["id"])
+        + "\n\nTools: search_store queries the real download stores (Z-Library / "
+        "Anna's Archive) for books the user could add to their download queue. Use it "
+        "whenever the user wants NEW books, not for questions about their shelf.\n"
+        "Actions: when the user's request implies concrete actions, END your reply with "
+        "a fenced ```actions code block containing a JSON array. Supported types:\n"
+        '- {"type":"queue","source":"zlibrary"|"annas","id":"<store id from search_store>",'
+        '"name":"","authors":"","cover":"","extension":"","size":""} — propose queueing '
+        "search results (copy fields verbatim from the tool rows; source is REQUIRED "
+        "and must be the store you searched — never queue an id without it).\n"
+        '- {"type":"collection_create","name":"<new collection>","book_ids":[<shelf ids>]}\n'
+        '- {"type":"collection_add","collection_id":<id>,"book_ids":[<shelf ids>]}\n'
+        '- {"type":"remetadata","book_id":<shelf id>,"query":"Author - Title"} — re-run '
+        "metadata extraction/enrichment for a shelf book with a junk title or missing "
+        "thumbnail; pass the best search hint as query.\n"
+        '- {"type":"refetch_cover","book_id":<shelf id>} — re-fetch a book thumbnail.\n'
+        '- {"type":"update_meta","book_id":<shelf id>,"fields":{"title":"...","authors":"...","categories":"...","year":1999}} — propose explicit field corrections (whitelisted fields only).\n'
+        "Metadata actions apply only to books on the user's shelf (ids from the context); "
+        "the user confirms every action before it runs.\n"
+        "Only propose actions the user asked for; keep the actions block last; otherwise "
+        "reply in plain prose (markdown allowed)."
+    )
+    msgs = [{"role": m.role, "content": m.content} for m in req.messages[-16:]
+            if m.role in ("user", "assistant") and m.content.strip()]
+    if not msgs or msgs[-1]["role"] != "user":
+        raise HTTPException(400, "last message must be from the user")
+    try:
+        return await ai.ai_chat(system, msgs, search_store)
+    except ai.AIUnavailable as e:
+        raise HTTPException(503, str(e))
 
 
 # ---------- admin: user management ----------

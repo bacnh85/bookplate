@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS collection_books(
   added_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (collection_id, book_id)
 );
+-- per-user API tokens for external tools / MCP clients (hash-only at rest)
+CREATE TABLE IF NOT EXISTS api_tokens(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
   title, authors, categories, isbn, content='books', content_rowid='id'
 );

@@ -9,7 +9,7 @@ async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers });
   if (r.status === 401 && !path.startsWith("/api/auth")) { logout(); throw new Error("signed out"); }
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || r.statusText);
+  if (!r.ok) { const err = new Error(data.detail || r.statusText); err.status = r.status; throw err; }
   return data;
 }
 
@@ -892,6 +892,240 @@ $("#downloads-dialog").addEventListener("click", (e) => {
 });
 $("#downloads-dialog").addEventListener("close", () => refreshQueue());  // re-evaluate polling
 
+/* ---------- AI assistant chat ---------- */
+let aiHistory = [];   // {role, content} — client-held; the server keeps nothing
+let aiPending = false;
+let aiTyping = null;
+
+$("#ai-btn").onclick = () => {
+  $("#ai-dialog").showModal();
+  $("#ai-starters").hidden = aiHistory.length > 0 || aiPending;
+  scrollAi();
+  $("#ai-input").focus();
+};
+$("#ai-close").onclick = () => $("#ai-dialog").close();
+$("#ai-dialog").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();  // backdrop click
+});
+document.querySelectorAll(".ai-starter").forEach((b) => { b.onclick = () => aiSend(b.textContent); });
+$("#ai-form").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("#ai-input").value.trim();
+  $("#ai-input").value = "";
+  aiSend(text);
+};
+
+function scrollAi() {
+  const box = $("#ai-messages");
+  box.scrollTop = box.scrollHeight;
+}
+
+function setAiPending() {
+  $("#ai-send").disabled = aiPending;
+  $("#ai-input").disabled = aiPending;
+  if (aiPending && !aiTyping) {
+    aiTyping = document.createElement("div");
+    aiTyping.className = "ai-msg ai-ai ai-typing";
+    aiTyping.setAttribute("aria-label", "AI is thinking");
+    aiTyping.append(...[0, 1, 2].map(() => document.createElement("span")));
+    $("#ai-messages").append(aiTyping);
+  }
+  if (!aiPending && aiTyping) { aiTyping.remove(); aiTyping = null; }
+  scrollAi();
+}
+
+async function aiSend(text) {
+  if (aiPending || !text) return;
+  $("#ai-error").textContent = "";
+  $("#ai-starters").hidden = true;
+  const userMsg = document.createElement("div");
+  userMsg.className = "ai-msg ai-user";
+  userMsg.textContent = text;
+  $("#ai-messages").append(userMsg);
+  aiHistory.push({ role: "user", content: text });
+  aiPending = true;
+  setAiPending();
+  try {
+    const out = await api("/api/ai/chat", { method: "POST", json: { messages: aiHistory.slice(-16) } });
+    aiHistory.push({ role: "assistant", content: out.reply });
+    const wrap = document.createElement("div");
+    wrap.className = "ai-msg ai-ai";
+    const body = document.createElement("div");
+    body.className = "ai-text";
+    body.textContent = out.reply;
+    wrap.append(body);
+    if (out.actions && out.actions.length) {
+      const cards = document.createElement("div");
+      cards.className = "ai-actions";
+      out.actions.forEach((a) => cards.append(aiActionCard(a)));
+      wrap.append(cards);
+    }
+    $("#ai-messages").append(wrap);
+  } catch (e) {
+    $("#ai-error").textContent = e.message;
+  } finally {
+    aiPending = false;
+    setAiPending();
+  }
+}
+
+function aiActionCard(a) {
+  if (a.type === "remetadata" || a.type === "refetch_cover" || a.type === "update_meta") {
+    return aiMetaCard(a);  // metadata/cover cards live below
+  }
+  const row = document.createElement("div");
+  row.className = "ai-action";
+  const main = document.createElement("div");
+  main.className = "ai-action-main";
+  const apply = document.createElement("button");
+  apply.className = "btn-primary"; apply.type = "button";
+  const dismiss = document.createElement("button");
+  dismiss.className = "btn-ghost"; dismiss.type = "button"; dismiss.textContent = "Dismiss";
+  dismiss.onclick = () => row.remove();
+
+  if (a.type === "queue") {
+    const src = a.source === "annas" ? "annas" : "zlib";
+    main.innerHTML = `
+      <div class="ai-action-title">${esc(a.name || a.id)}</div>
+      <div class="result-sub">${esc([a.authors, (a.extension || "").toUpperCase(), a.size].filter(Boolean).join(" · "))}</div>`;
+    apply.textContent = "Add to queue";
+    apply.onclick = async () => {
+      apply.disabled = true;
+      try {
+        let j = await api(SOURCES[src].queue, { method: "POST", json: {
+          id: a.id, name: a.name, authors: a.authors, cover: a.cover,
+          extension: a.extension, size: a.size } });
+        if (j.status === "failed") {  // same as the manual Get-later path
+          j = await api(`/api/zlib/queue/${j.id}/retry`, { method: "POST" });
+        }
+        if (j.status === "failed") {
+          main.innerHTML = `<div class="ai-action-title">${esc(a.name || a.id)}</div>
+            <div class="ai-warn">${esc(j.error || "The queue rejected this item")}</div>`;
+        } else {
+          main.innerHTML = `<div class="ai-action-title">${esc(a.name || a.id)}</div>
+            <div class="ai-done">Queued ✓ — see Downloads</div>`;
+        }
+        apply.remove(); dismiss.remove();
+        refreshQueue();
+      } catch (e) {
+        apply.disabled = false;
+        $("#ai-error").textContent = e.message;
+      }
+    };
+  } else if (a.type === "collection_create" || a.type === "collection_add") {
+    const n = (a.book_ids || []).length;
+    const label = a.type === "collection_create"
+      ? `Create collection "${a.name}"${n ? ` with ${n} book${n === 1 ? "" : "s"}` : ""}`
+      : `Add ${n} book${n === 1 ? "" : "s"} to collection #${a.collection_id}`;
+    main.innerHTML = `<div class="ai-action-title">${esc(label)}</div>`;
+    apply.textContent = "Apply";
+    // ids may be stale/hallucinated (shelf context is truncated) — apply what
+    // works, report the rest, and never re-create on retry (that would 409)
+    let cid = a.collection_id, created = false, reused = false, failed = [...(a.book_ids || [])];
+    const applyMissing = async () => {
+      if (a.type === "collection_create" && !created) {
+        try {
+          cid = (await api("/api/collections", { method: "POST", json: { name: a.name } })).id;
+        } catch (e) {
+          // 409: a same-named collection exists — file the books into it
+          if (e.status !== 409 && !/already exists/i.test(e.message || "")) throw e;
+          const cols = await api("/api/collections");
+          const found = cols.find((c) => c.name.toLowerCase() === a.name.toLowerCase());
+          if (!found) throw e;
+          cid = found.id; reused = true;
+        }
+        created = true;
+      }
+      const still = [];
+      for (const bid of failed) {
+        try { await api(`/api/collections/${cid}/books`, { method: "POST", json: { book_id: bid } }); }
+        catch (e) { still.push(bid); }
+      }
+      failed = still;
+      loadCollections();
+      return failed.length;
+    };
+    apply.onclick = async () => {
+      apply.disabled = true;
+      try {
+        const missing = await applyMissing();
+        if (!missing) {
+          main.innerHTML = `<div class="ai-action-title">${esc(label)}</div>
+            <div class="ai-done">${reused ? "Added to existing ✓" : "Done ✓"}</div>`;
+          apply.remove(); dismiss.remove();
+        } else {
+          main.innerHTML = `<div class="ai-action-title">${esc(label)}</div>
+            <div class="ai-warn">${missing} of ${n} couldn't be added — not on your shelf?</div>`;
+          apply.disabled = false; apply.textContent = "Retry missing";
+        }
+      } catch (e) {  // creation itself failed — retry is safe (nothing created)
+        apply.disabled = false;
+        $("#ai-error").textContent = e.message;
+      }
+    };
+  } else {
+    return document.createDocumentFragment();  // unknown type — skip silently
+  }
+  row.append(main, apply, dismiss);
+  return row;
+}
+
+function aiMetaCard(a) {
+  const row = document.createElement("div");
+  row.className = "ai-action";
+  const main = document.createElement("div");
+  main.className = "ai-action-main";
+  const apply = document.createElement("button");
+  apply.className = "btn-primary"; apply.type = "button";
+  const dismiss = document.createElement("button");
+  dismiss.className = "btn-ghost"; dismiss.type = "button"; dismiss.textContent = "Dismiss";
+  dismiss.onclick = () => row.remove();
+  const bid = a.book_id;
+  const label = a.type === "remetadata"
+    ? `Re-fetch metadata for #${bid}${a.query ? ` — hint: "${a.query}"` : ""}`
+    : a.type === "refetch_cover" ? `Re-fetch cover for #${bid}`
+    : "Correct book fields";
+  main.innerHTML = `<div class="ai-action-title">${esc(label)}</div>`;
+  if (a.type === "update_meta") {
+    const diffBox = document.createElement("div");
+    main.append(diffBox);
+    api(`/api/books/${bid}`).then((b) => {  // honest old → new diff from the shelf
+      diffBox.innerHTML = Object.entries(a.fields).map(([k, v]) =>
+        `<div class="ai-diff">${esc(k)}: ${esc(String(b[k] ?? "—"))} → <b>${esc(String(v))}</b></div>`).join("");
+    }).catch(() => {
+      diffBox.innerHTML = Object.entries(a.fields).map(([k, v]) =>
+        `<div class="ai-diff">${esc(k)} → <b>${esc(String(v))}</b></div>`).join("");
+    });
+  }
+  apply.textContent = a.type === "refetch_cover" ? "Re-fetch" : "Apply";
+  apply.onclick = async () => {
+    apply.disabled = true;
+    try {
+      if (a.type === "remetadata") {
+        const out = await api(`/api/books/${bid}/remetadata`, { method: "POST", json: { query: a.query || "" } });
+        const line = out.before.title !== out.after.title
+          ? `${esc(out.before.title)} → <b>${esc(out.after.title)}</b>`
+          : `refreshed ✓${out.changed && out.changed.length ? ` (${out.changed.length} fields)` : ""}`;
+        main.innerHTML = `<div class="ai-action-title">${esc(label)}</div><div class="ai-done">${line}</div>`;
+      } else if (a.type === "refetch_cover") {
+        const out = await api(`/api/books/${bid}/cover`, { method: "POST", json: {} });
+        main.innerHTML = `<div class="ai-action-title">${esc(label)}</div>
+          <div class="ai-done">${out.updated ? "Cover updated ✓" : "No better cover found"}</div>`;
+      } else {
+        await api(`/api/books/${bid}`, { method: "PATCH", json: a.fields });
+        main.innerHTML = `<div class="ai-action-title">${esc(label)}</div><div class="ai-done">Fields updated ✓</div>`;
+      }
+      apply.remove(); dismiss.remove();
+      rerenderView();
+    } catch (e) {
+      apply.disabled = false;
+      $("#ai-error").textContent = e.message;
+    }
+  };
+  row.append(main, apply, dismiss);
+  return row;
+}
+
 /* ---------- reader ---------- */
 function openReader(id) { location.assign(`/reader.html?id=${id}`); }
 
@@ -953,6 +1187,7 @@ async function boot() {
     $("#smtp-hint").hidden = !(me_devices.length && !me_kindle);
     me_id = me.id;
     me_sources = me.sources || me_sources;
+    $("#ai-btn").hidden = !me_sources.ai;
     loadCollections();
     show("home");
     refreshQueue();  // badge + resume polling if jobs are active
@@ -965,6 +1200,45 @@ boot();
 let adminTab = "devices";
 let zhPage = 1, zhTotal = 1;
 
+/* ----- API tokens (all users) ----- */
+async function loadTokens() {
+  let toks = [];
+  try { toks = await api("/api/tokens"); } catch (e) { return adminFail(e); }
+  const box = $("#token-list");
+  box.innerHTML = "";
+  $("#token-empty").hidden = toks.length > 0;
+  for (const t of toks) {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    row.innerHTML = `<div class="au-email">${esc(t.label || "token")}</div>
+      <span class="result-sub">created ${esc(t.created_at || "")}</span>
+      <span class="au-actions"></span>`;
+    const act = row.querySelector(".au-actions");
+    const rm = document.createElement("button");
+    rm.className = "btn-danger"; rm.type = "button"; rm.textContent = "Revoke";
+    rm.onclick = async () => {
+      if (await confirmDialog("Revoke token?", "External tools using it will stop working.", "Revoke")) {
+        await api(`/api/tokens/${t.id}`, { method: "DELETE" });
+        loadTokens();
+      }
+    };
+    act.append(rm);
+    box.append(row);
+  }
+}
+
+$("#token-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const out = await api("/api/tokens", { method: "POST", json: { label: $("#token-label").value } });
+    const shown = $("#token-shown");
+    shown.hidden = false;
+    shown.innerHTML = `Token for ${esc(out.label || "external tool")} — copy now, shown once: <code>${esc(out.token)}</code>`;
+    $("#token-label").value = "";
+    loadTokens();
+  } catch (err) { adminFail(err); }
+};
+
 document.querySelectorAll(".admin-tab").forEach((b) => {
   b.onclick = () => setAdminTab(b.dataset.tab);
 });
@@ -973,12 +1247,13 @@ function setAdminTab(tab) {
   adminTab = tab;
   document.querySelectorAll(".admin-tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.tab === tab));
-  ["devices", "users", "settings", "zlib"].forEach((t) => { $(`#admin-${t}`).hidden = t !== tab; });
+  ["devices", "users", "settings", "zlib", "api"].forEach((t) => { $(`#admin-${t}`).hidden = t !== tab; });
   $("#admin-error").textContent = "";
   if (tab === "devices") loadDevices();
   if (tab === "users") loadAdminUsers();
   if (tab === "settings") loadAdminSettings();
   if (tab === "zlib") loadAdminZlib();
+  if (tab === "api") loadTokens();
 }
 const adminFail = (e) => { $("#admin-error").textContent = e.message; };
 
@@ -1127,7 +1402,7 @@ $("#admin-settings-form").onsubmit = async (e) => {
     registration: $("#set-registration").value,
   };
   for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
-    const v = $(sel).value;
+    const v = $(sel).value.trim();           // pasted keys often carry trailing ws
     if (v) values[key] = v;                 // typed replacement
     else if (clearFlags.has(key)) values[key] = "";  // explicit clear -> empty value
     // else: leave untouched

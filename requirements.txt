@@ -6,3 +6,4 @@ httpx
 ebooklib
 pypdf
 pymupdf
+mcp<2
