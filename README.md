@@ -151,7 +151,11 @@ Frontend caching: HTML is served `Cache-Control: no-cache`, but proxies/CDNs in 
 (most notably Cloudflare's default Browser Cache TTL) may pin JS/CSS for a long time.
 Asset URLs are therefore stamped (`/app.css?v=2`, `/app.js?v=10`, `/reader.js?v=2`) —
 bump the `?v=` number in `index.html`/`reader.html` on every JS/CSS change.
-`scripts/test_frontend.py` asserts the stamping is present.
+`scripts/test_frontend.py` asserts the stamping is present. Vendored `web/foliate-js`
+uses relative imports, which the entry's `?v=` does not cover — so when anything under
+`web/foliate-js/` changes, copy the tree to a new directory (e.g. `foliate-js/` →
+`foliate-js2/`) and point `reader.js`'s import there; relative URLs then resolve fresh
+wholesale.
 
 The `chown` matters: `cp -a` keeps the source uid (501 on macOS, your uid on Linux) but
 the container runs as uid 1000 — without it the migrated DB is unwritable and the
