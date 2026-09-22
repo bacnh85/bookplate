@@ -115,7 +115,30 @@ class TestReaderExperience(unittest.TestCase):
 
     def test_reader_pdf_fetches_use_reader_flag(self):
         src = READER.read_text()
-        self.assertIn('/file?reader=1', src)
+        # flag built at the single fileUrl site: PDFs get ?reader=1 (server
+        # linearized derivative), other formats don't
+        self.assertIn('isPdf ? "?reader=1" : ""', src)
+
+    def test_reader_streams_every_format(self):
+        """The non-PDF path must stream via the Range pseudo-File like PDFs do.
+        A whole-file fetch+blob is what killed iOS Safari on a 36.5MB EPUB
+        ('Failed to open book — Load failed'): one long body the phone drops."""
+        src = READER.read_text()
+        self.assertIn('makeStreamingFile(', src)          # shared by both branches
+        self.assertNotIn('await res.blob()', src)         # whole-file download is gone
+        self.assertIn('bytes=${begin}-${end - 1}', src)   # Range math intact
+        self.assertIn('TypeError', src)                   # per-slice retry present
+
+    def test_reader_margin_is_css_length(self):
+        """The paginator consumes margin as a CSS length (minmax(var(--_margin),
+        1fr), foliate-js README: 'The unit must be px'). A unitless non-zero
+        value invalidates the grid rows and pages render at ~45% height."""
+        src = READER.read_text()
+        html = (WEB / "reader.html").read_text()
+        for v in ("16px", "48px", "96px"):
+            self.assertIn(f'value="{v}"', html)
+        self.assertIn('get("reader-margin", "48px")', src)
+        self.assertIn('+ "px"', src)  # legacy unitless values normalized at write
 
     def test_pdfjs_range_chunk_size_bumped(self):
         src = (WEB / "foliate-js" / "pdf.js").read_text()

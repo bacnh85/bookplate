@@ -22,7 +22,7 @@ const settings = {
   "font-family": get("reader-font-family", "literata"),
   lineheight: get("reader-lineheight", "1.6"),
   align: get("reader-align", "justify"),
-  margin: get("reader-margin", "48"),
+  margin: get("reader-margin", "48px"),
   flow: get("reader-flow", "paginated"),
 };
 const put = (k, v) => { settings[k] = v; localStorage.setItem(`reader-${k}`, v); };
@@ -74,7 +74,11 @@ function applyStyles() {
 function applyLayout() {
   if (!view) return;
   view.renderer.setAttribute("flow", settings.flow);
-  view.renderer.setAttribute("margin", settings.margin);
+  // paginator consumes margin as a CSS length (minmax(var(--_margin), 1fr));
+  // a unitless value invalidates the grid rows and the page renders at ~45%
+  // height — normalize any legacy unitless reader-margin (no migration needed)
+  const marginPx = /^\d+(\.\d+)?$/.test(settings.margin) ? settings.margin + "px" : settings.margin;
+  view.renderer.setAttribute("margin", marginPx);
   view.renderer.setAttribute("animated", "");  // 300ms eased page turns
   if (view.isFixedLayout) applyZoom();
 }
@@ -208,62 +212,77 @@ async function openFoliate(file) {
 addEventListener("pagehide", syncProgress);
 document.addEventListener("visibilitychange", () => { if (document.hidden) syncProgress(); });
 
-if (book.ext === "pdf") {
-  // pseudo-File whose slices are fetched with HTTP Range: pdf.js requests only
-  // the xref + the objects of visible pages (206 verified). foliate's call
-  // sites all do `file.slice(a, b).arrayBuffer()`, so slice() returns that
-  // shape sync. reader=1 → server prefers its linearized derivative (built
-  // lazily, once). If a proxy strips Range (200 instead of 206), the full body
-  // is fetched ONCE and every further slice is cut from memory.
-  const fileUrl = `/api/books/${id}/file?reader=1`;
-  // the derivative's byte length can differ from books.size (the original's) —
-  // pdf.js validates slices against the declared size, so probe the real one.
-  // If a proxy strips Range we get 200 here; the true size then only surfaces
-  // with the body — handled below by re-deriving pdfSize from fullBody.
-  const probe = await fetch(fileUrl, { headers: { ...headers, Range: "bytes=0-0" } });
-  let pdfSize = Number((probe.headers.get("content-range") || "").split("/")[1]) || 0;
-  let fullBody = null;
+// One Range-backed pseudo-File for EVERY format. foliate/pdf.js/zip.js all
+// consume only {size, slice(a,b).arrayBuffer()} (zip.js's BlobReader does
+// `blob.slice(e,n).arrayBuffer()`), so EPUBs are no longer downloaded whole —
+// zip.js reads the zip tail + entry headers via Range, and pages/images load
+// per-entry. pdf.js behaves the same (that is how the PDF path always worked).
+// A proxy that strips Range (200 instead of 206) is handled by memoizing the
+// full body once and slicing from memory — the pre-existing fallback.
+function makeStreamingFile(fileUrl, headers, name, size) {
+  let fullBody = null
   const file = {
-    size: pdfSize,
-    name: `${book.title || "book"}.pdf`,
-    // never called on the PDF path; marks this as a File for makeBook()
+    size,
+    name,
+    // full fetch; also marks this object as a File for makeBook()
     arrayBuffer: () => fetch(fileUrl, { headers }).then(r => r.arrayBuffer()),
-    slice: (begin = 0, end = pdfSize) => ({
-      arrayBuffer: () => fullBody
-        ? Promise.resolve(fullBody.slice(begin, end))
-        : fetch(fileUrl, { headers: { ...headers, Range: `bytes=${begin}-${end - 1}` } })
+    slice: (begin = 0, end = size) => ({
+      arrayBuffer: () => {
+        end = Math.min(end ?? size, size)  // never request past EOF (416)
+        if (fullBody) return Promise.resolve(fullBody.slice(begin, end))
+        const get = () => fetch(fileUrl, { headers: { ...headers, Range: `bytes=${begin}-${end - 1}` } })
           .then(r => r.arrayBuffer().then(buf => {
-            if (r.status !== 206) {  // Range stripped — body IS the whole derivative
-              fullBody = buf;
-              pdfSize = buf.byteLength;  // fix the declared size before pdf.js validates slices
-              file.size = pdfSize;
+            if (r.status !== 206) {  // Range stripped — body IS the whole file
+              fullBody = buf
+              file.size = buf.byteLength  // re-derive before consumers validate offsets
+              return buf.slice(begin, end)
             }
-            return r.status === 206 ? buf : buf.slice(begin, end);
-          })),
+            return buf
+          }))
+        // one retry: transient mobile drops fail a single small range, not the book
+        return get().catch(e => { if (e.name !== "TypeError") throw e; return get() })
+      },
     }),
-  };
-  // first open of a non-warmed PDF pays a one-time server linearize — say so
-  const prepTimer = setTimeout(() => {
-    const sub = document.getElementById("load-sub");
-    if (sub) sub.textContent = "Preparing optimized layout…";
-  }, 2000);
-  try {
-    await openFoliate(file);
-  } catch (e) {
-    const el = document.getElementById("loading");
-    if (el) el.textContent = `Failed to open book — ${e.message}`;
-  } finally {
-    clearTimeout(prepTimer);
   }
-} else {
-  try {
-    const res = await fetch(`/api/books/${id}/file`, { headers });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    await openFoliate(new File([await res.blob()], `${book.title || "book"}.${book.ext}`));
-  } catch (e) {
-    const el = document.getElementById("loading");
-    if (el) el.textContent = `Failed to open book — ${e.message}`;
+  return file
+}
+
+function showOpenError(e) {
+  const el = document.getElementById("loading")
+  if (!el) return
+  el.textContent = `Failed to open book — ${e.message}`
+  const hint = document.createElement("div")
+  hint.textContent = "Check your connection, then tap to retry."
+  hint.style.cssText = "cursor:pointer;text-decoration:underline"
+  hint.onclick = () => location.reload()
+  el.append(hint)
+}
+
+const isPdf = book.ext === "pdf"
+// reader=1 → server prefers its linearized derivative (built lazily, once);
+// ignored for non-PDF. The derivative's byte length can differ from books.size
+// (the original's) — pdf.js validates slices against the declared size, so the
+// PDF path probes the real one. Non-PDF has no derivative: book.size is exact.
+const fileUrl = `/api/books/${id}/file${isPdf ? "?reader=1" : ""}`
+// first open of a non-warmed PDF pays a one-time server linearize — say so
+const prepTimer = isPdf ? setTimeout(() => {
+  const sub = document.getElementById("load-sub")
+  if (sub) sub.textContent = "Preparing optimized layout…"
+}, 2000) : null
+try {
+  let size = book.size || 0
+  if (isPdf) {
+    // If a proxy strips Range we get 200 here; the true size then only surfaces
+    // with the body — handled inside makeStreamingFile via the fullBody fallback.
+    const probe = await fetch(fileUrl, { headers: { ...headers, Range: "bytes=0-0" } })
+    size = Number((probe.headers.get("content-range") || "").split("/")[1]) || size
   }
+  if (!size) throw new Error("book file is empty")
+  await openFoliate(makeStreamingFile(fileUrl, headers, `${book.title || "book"}.${book.ext}`, size))
+} catch (e) {
+  showOpenError(e)
+} finally {
+  if (prepTimer) clearTimeout(prepTimer)
 }
 
 /* ---- controls ---- */
