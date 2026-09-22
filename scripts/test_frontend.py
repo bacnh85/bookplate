@@ -54,6 +54,12 @@ class TestAssetVersioning(unittest.TestCase):
     def test_index_html_stamps_css(self):
         self.assertRegex(INDEX.read_text(), r'href="/app\.css\?v=\d+"')
 
+    def test_foliate_entry_import_stamped(self):
+        # the view.js entry import must carry ?v= too (relative imports inside
+        # the foliate tree resolve fresh only when the tree dir is swapped)
+        self.assertRegex(READER.read_text(),
+                         r'import\("/foliate-js/view\.js\?v=\d+"\)')
+
 
 class TestReaderSettings(unittest.TestCase):
     """reader.js persists each reading preference via put(k) -> localStorage
