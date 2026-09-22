@@ -54,6 +54,10 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         New Collection</button>
 
+      <button class="side-link" data-view="docs" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14zM4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5M9 7h6"/></svg>
+        Documentation</button>
+
       <div class="side-spacer"></div>
       <div class="side-foot">
         <span id="user-name" class="result-sub"></span>
@@ -205,7 +209,8 @@
             <p class="result-sub">Let external tools and AI agents act as you over the REST API
               (<code>Authorization: Bearer &lt;token&gt;</code>) and the MCP endpoint
               (<code>/mcp</code>). Tokens are shown once and stored hashed — copy them when you
-              create them. An agent can do everything you can, so treat tokens like passwords.</p>
+              create them. An agent can do everything you can, so treat tokens like passwords.
+              Full guides: <strong>Documentation</strong> in the sidebar (REST API, MCP, OPDS).</p>
             <form id="token-form" class="admin-row">
               <input type="text" id="token-label" placeholder="label, e.g. Claude">
               <button class="btn-primary" type="submit">Create token</button>
@@ -214,6 +219,21 @@
             <div id="token-list" class="admin-table"></div>
             <div class="empty" id="token-empty" hidden>No tokens.<small>Create one to let an external tool call the API.</small></div>
           </section>
+        </div>
+
+        <div id="docs-view" hidden>
+          <div class="view-head"><h2>Documentation</h2></div>
+          <div class="admin-tabs docs-tabs" role="tablist" aria-label="Documentation sections">
+            <button class="btn-ghost admin-tab active" data-doc="api" type="button">REST API</button>
+            <button class="btn-ghost admin-tab" data-doc="mcp" type="button">MCP</button>
+            <button class="btn-ghost admin-tab" data-doc="opds" type="button">OPDS</button>
+            <button class="btn-ghost admin-tab" data-doc="kindle" type="button">Kindle</button>
+            <button class="btn-ghost admin-tab" data-doc="selfhost" type="button">Self-hosting</button>
+            <button class="btn-ghost admin-tab" data-doc="admin" type="button">Admin</button>
+            <button class="btn-ghost admin-tab" data-doc="faq" type="button">FAQ</button>
+          </div>
+          <div class="error-line" id="docs-error" role="alert"></div>
+          <div id="docs-body" class="docs-body"></div>
         </div>
       </main>
     </div>
@@ -336,6 +356,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=8"></script>
+<script type="module" src="/app.js?v=9"></script>
 </body>
 </html>

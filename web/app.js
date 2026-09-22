@@ -377,7 +377,7 @@ $("#kindle-close").onclick = () => $("#kindle-dialog").close();
 /* ---------- navigation ---------- */
 let currentView = "home";
 let currentCollectionId = null;
-const VIEW_ELS = { home: "#home-view", store: "#store-view", library: "#library-view", admin: "#admin-view" };
+const VIEW_ELS = { home: "#home-view", store: "#store-view", library: "#library-view", admin: "#admin-view", docs: "#docs-view" };
 
 function show(view, collectionId = null, keepDrawer = false) {
   if (!keepDrawer) setDrawer(false);
@@ -397,6 +397,7 @@ function show(view, collectionId = null, keepDrawer = false) {
   else if (view === "library") loadShelf($("#search").value);
   else if (view === "collection") loadCollection();
   else if (view === "admin") setAdminTab(adminTab);
+  else if (view === "docs") setDocsTab(docsTab);
 }
 
 function rerenderView() {
@@ -1272,6 +1273,31 @@ function setAdminTab(tab) {
   if (tab === "api") loadTokens();
 }
 const adminFail = (e) => { $("#admin-error").textContent = e.message; };
+
+/* ---------- docs ---------- */
+let docsTab = "api", docsLoaded = false;
+async function loadDocs() {
+  try {
+    const r = await fetch("/docs.html");
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    $("#docs-body").innerHTML = await r.text();
+    docsLoaded = true;
+    setDocsTab(docsTab);
+  } catch (e) {
+    $("#docs-error").textContent = `Couldn't load the documentation (${e.message}). Reload to retry.`;
+  }
+}
+function setDocsTab(tab) {
+  docsTab = tab;
+  document.querySelectorAll("#docs-view .admin-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.doc === tab));
+  document.querySelectorAll("#docs-body > section").forEach((s) => { s.hidden = s.dataset.doc !== tab; });
+  $("#docs-error").textContent = "";
+  if (!docsLoaded) loadDocs();
+}
+document.querySelectorAll("#docs-view .admin-tab").forEach((b) => {
+  b.onclick = () => setDocsTab(b.dataset.doc);
+});
 
 /* ----- kindle devices tab (every user) ----- */
 async function loadDevices() {

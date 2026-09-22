@@ -544,3 +544,48 @@ body[data-theme="night"] {
 @media (prefers-reduced-motion: no-preference) {
   body[data-theme] { transition: background-color .25s ease, color .25s ease; }
 }
+
+/* ---------- docs (in-app documentation; see web/docs.html) ---------- */
+#docs-view { max-width: 720px; margin: 0 auto; }
+.docs-body { padding-bottom: 32px; }
+.docs-body h3 {
+  font-family: var(--font-display); font-size: var(--fs-lg); font-weight: 600;
+  margin: 18px 0 4px; padding-top: 14px; border-top: 1px solid var(--line);
+}
+.docs-body h3:first-child { border-top: none; padding-top: 0; margin-top: 8px; }
+.docs-body h4 { font-size: var(--fs-base); font-weight: 600; margin: 18px 0 6px; }
+.docs-body h5 {
+  font-size: var(--fs-sm); font-weight: 600; color: var(--ink-soft);
+  margin: 14px 0 4px;
+}
+.docs-body p, .docs-body ul, .docs-body ol { margin: 6px 0; }
+.docs-body li { margin: 3px 0; }
+.docs-body a { color: var(--accent); }
+.docs-body code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: var(--fs-sm); background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--r-sm); padding: 1px 5px;
+}
+.docs-body pre {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: 10px 12px; overflow-x: auto; margin: 8px 0;
+}
+.docs-body pre code { background: none; border: none; padding: 0; font-size: var(--fs-sm); line-height: 1.5; }
+.docs-body table { width: 100%; border-collapse: collapse; margin: 6px 0 12px; }
+.docs-body th {
+  text-align: left; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-soft);
+  padding: 6px 8px 4px; border-bottom: 1px solid var(--line);
+}
+.docs-body td {
+  font-size: var(--fs-sm); padding: 6px 8px;
+  border-bottom: 1px solid var(--line); vertical-align: top;
+}
+.docs-body tbody tr:last-child td { border-bottom: none; }
+.docs-body td:first-child code { white-space: nowrap; }
+.docs-body td, .docs-body th, .docs-body li code { overflow-wrap: anywhere; }  /* 390px: long paths/tokens must break */
+.docs-warn {
+  font-size: var(--fs-sm); color: var(--ink-soft);
+  border-left: 2px solid var(--accent); background: var(--card);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  padding: 8px 12px; margin: 12px 0;
+}

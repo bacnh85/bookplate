@@ -59,5 +59,47 @@ class TestReaderSettings(unittest.TestCase):
         self.assertRegex(src, r'parseFloat\(localStorage\.getItem\("reader-font"\)\) \|\| 17')
 
 
+class TestDocsHtml(unittest.TestCase):
+    """web/docs.html is the in-app documentation fragment: app.js fetches it and
+    injects it into #docs-body via innerHTML, so it must stay a pure-HTML
+    fragment (no <script>), and its contract strings (endpoints, auth, MCP tool
+    names) must not drift from the server."""
+
+    DOCS = WEB / "docs.html"
+    TOOLS = ["search_library", "get_book", "list_collections", "create_collection",
+             "add_to_collection", "search_store", "queue_book", "list_queue",
+             "remetadata", "refetch_cover", "update_book"]
+
+    def test_sections_cover_every_tab(self):
+        src = self.DOCS.read_text()
+        tabs = set(re.findall(r'data-doc="(\w+)"', INDEX.read_text()))
+        self.assertTrue(tabs, "docs tabs missing from index.html")
+        sections = set(re.findall(r'<section data-doc="(\w+)"', src))
+        self.assertEqual(sections, tabs,
+                         f"docs.html sections {sorted(sections)} != index.html tabs {sorted(tabs)}")
+
+    def test_contract_strings_present(self):
+        src = self.DOCS.read_text()
+        for needle in ["/opds", "/mcp", "Authorization: Bearer", "openapi.json",
+                       "kindle.com", "@kindle.com", "/api/books", "/api/tokens",
+                       "/api/ai/chat", "api.z.ai/api/paas/v4"] + self.TOOLS:
+            self.assertIn(needle, src, f"docs.html lost contract string: {needle}")
+
+    def test_no_executable_content_in_fragment(self):
+        """docs.html is injected via innerHTML, where <script> never runs but
+        on*= handler attributes and javascript: URLs DO execute — block both."""
+        src = self.DOCS.read_text()
+        self.assertNotIn("<script", src.lower())
+        self.assertIsNone(re.search(r"\son[a-z]+\s*=", src, re.IGNORECASE),
+                          "docs.html must not use inline event-handler attributes")
+        self.assertIsNone(re.search(r"javascript\s*:", src, re.IGNORECASE),
+                          "docs.html must not use javascript: URLs")
+
+    def test_docs_view_wired_in_app(self):
+        app = (WEB / "app.js").read_text()
+        self.assertIn('docs: "#docs-view"', app)
+        self.assertIn('fetch("/docs.html")', app)
+
+
 if __name__ == "__main__":
     unittest.main()

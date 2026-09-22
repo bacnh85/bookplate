@@ -1,0 +1,437 @@
+<!-- Bookplate in-app documentation. Static HTML fragment: app.js fetches this
+     file and injects it into #docs-body; each <section data-doc="…"> is one tab.
+     Editing rule: plain HTML only — no script tags, on*= handler attributes,
+     or js-scheme hrefs (injected via innerHTML; TestDocsHtml enforces this).
+     Keep every endpoint/tool fact in sync with app/main.py and app/mcp_server.py;
+     scripts/test_frontend.py pins the important strings. -->
+
+<section data-doc="api">
+  <h3>REST API</h3>
+  <p>Everything the web app does is also a plain REST API on the same server — you can
+  script uploads, searches, queueing and reads with <code>curl</code> or any HTTP client.
+  Base URL: <code>http://&lt;your-server&gt;:8480</code> (or your HTTPS address behind a
+  reverse proxy).</p>
+
+  <h4>Authentication</h4>
+  <p>Two ways to authenticate; every <code>/api/…</code> endpoint accepts both:</p>
+  <ul>
+    <li><strong>API token</strong> (recommended for scripts and agents): create one under
+    <em>Settings → API</em>. Tokens look like <code>bp_…</code>, are shown once, and are
+    stored hashed. Send them as a header:
+    <pre><code>Authorization: Bearer bp_YOUR_TOKEN</code></pre></li>
+    <li><strong>Session cookie</strong>: <code>POST /api/auth/login</code> returns a JWT
+    and sets a <code>session</code> cookie (30 days) — what your browser already uses.</li>
+  </ul>
+  <p class="result-sub">A token acts as you and sees exactly your shelf (your books plus
+  anything shared with you). Treat tokens like passwords — revoke any you no longer use.</p>
+
+  <pre><code># list your books
+curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
+  http://localhost:8480/api/books?q=dune</code></pre>
+
+  <p>Responses are JSON. Errors come back as <code>{"detail": "…"}</code> with a matching
+  HTTP status (401 unauthenticated, 403 not allowed, 404 not visible to you, 409 conflict).</p>
+
+  <h4>Interactive reference</h4>
+  <p>A live, try-it-out reference is generated from the server itself:
+  <a href="/docs" target="_blank" rel="noopener"><code>/docs</code></a> (Swagger UI —
+  works signed-in from this browser) and the raw schema at
+  <a href="/openapi.json" target="_blank" rel="noopener"><code>/openapi.json</code></a>.</p>
+
+  <h4>Endpoints</h4>
+
+  <h5>Auth &amp; account</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/api/auth/register</code></td><td><code>{username, password}</code> — lands as <em>pending</em> until an admin approves</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/auth/login</code></td><td><code>{username, password}</code> → <code>{token}</code> + session cookie</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/me</code></td><td>your profile, Kindle devices, which sources are configured</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/tokens</code></td><td>list your API tokens (no secrets)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/tokens</code></td><td><code>{label}</code> → <code>{token}</code> — shown once, store it now</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/tokens/{id}</code></td><td>revoke a token</td></tr>
+    </tbody>
+  </table>
+
+  <h5>Books</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/books?q=</code></td><td>your shelf (own + shared), full-text search across title/author/categories/ISBN; quoted phrases allowed</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/books/{id}</code></td><td>full metadata + your reading progress</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books</code></td><td>upload — multipart <code>file=@book.epub</code>; PDF, EPUB, MOBI, AZW3, FB2, CBZ; auto-metadata + dedup</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/books/{id}/file</code></td><td>the book file (add <code>?dl=1</code> for a download attachment); supports HTTP Range</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/books/{id}/cover</code></td><td>cover image</td></tr>
+      <tr><td><code>PATCH</code></td><td><code>/api/books/{id}</code></td><td>edit metadata fields (title, authors, year, …) — uploader or admin</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books/{id}/remetadata</code></td><td><code>{query}</code> optional “Author - Title” hint — re-runs the whole extraction/enrichment chain</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books/{id}/cover</code></td><td>re-fetch the cover (embedded art → PDF page-1 → enrichment → generated)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books/{id}/share</code></td><td><code>{username}</code> — share the book with another user</td></tr>
+      <tr><td><code>PUT</code></td><td><code>/api/books/{id}/progress</code></td><td><code>{cfi, pct}</code> — save reading position (what the in-app reader does)</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/books/{id}</code></td><td>remove from shelf (uploader or admin)</td></tr>
+    </tbody>
+  </table>
+
+  <h5>Collections</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/collections</code></td><td>your collections (optional <code>?book_id=</code> adds a <code>member</code> flag)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/collections</code></td><td><code>{name}</code></td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/collections/{id}</code></td><td>collection with its visible books</td></tr>
+      <tr><td><code>PATCH</code></td><td><code>/api/collections/{id}</code></td><td>rename (<code>{name}</code>)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/collections/{id}/books</code></td><td><code>{book_id}</code> — file a book</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/collections/{id}/books/{book_id}</code></td><td>remove a book</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/collections/{id}</code></td><td>delete the collection (books stay on shelves)</td></tr>
+    </tbody>
+  </table>
+
+  <h5>Book Store (Z-Library &amp; Anna's Archive)</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/search?q=</code></td><td>search Z-Library (admin account, configured server-wide)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/limits</code></td><td>daily quota state</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/zlib/queue</code></td><td><code>{id, name, authors, cover, extension, size}</code> — queue a download (fields from search results)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/queue</code></td><td>queue + job statuses</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/zlib/queue/{job_id}</code></td><td>cancel/remove a job</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/zlib/queue/{job_id}/retry</code></td><td>retry a failed job</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/annas/search?q=</code></td><td>search Anna's Archive</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/annas/queue</code></td><td>queue an Anna's Archive download (same body shape)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/annas/queue</code></td><td>queue + statuses</td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/annas/queue/{job_id}</code></td><td>cancel/remove</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/annas/queue/{job_id}/retry</code></td><td>retry a failed job</td></tr>
+    </tbody>
+  </table>
+  <p class="result-sub">All users share the one Z-Library account and its daily quota —
+  the queue is FIFO and waits out the limit automatically.</p>
+
+  <h5>Send to Kindle</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/kindle/devices</code></td><td>your registered Kindle addresses</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/kindle/devices</code></td><td><code>{label, email}</code> — email must end in <code>@kindle.com</code></td></tr>
+      <tr><td><code>DELETE</code></td><td><code>/api/kindle/devices/{id}</code></td><td>remove a device</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books/{id}/send-to-kindle</code></td><td><code>{device_id}</code> — email the book (EPUB/PDF) via the server's SMTP gateway</td></tr>
+    </tbody>
+  </table>
+
+  <h5>Ask AI</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>POST</code></td><td><code>/api/ai/chat</code></td><td><code>{messages: [{role, content}]}</code> (last ≤16) — stateless; reply may include <em>action</em> proposals (queue books, create/fill collections) that you apply via the normal endpoints above. Rate-limited to 10/min.</td></tr>
+    </tbody>
+  </table>
+
+  <h5>Admin (role=admin)</h5>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>GET</code></td><td><code>/api/admin/users</code></td><td>all accounts</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/admin/users</code></td><td><code>{username, password, role}</code></td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/admin/users/{uid}/approve</code> · <code>/enable</code> · <code>/disable</code></td><td>account state</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/admin/users/{uid}/set-role</code></td><td><code>{role}</code> — last active admin is protected (409)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/admin/users/{uid}/reset-password</code></td><td><code>{password}</code></td></tr>
+      <tr><td><code>GET</code> / <code>PUT</code></td><td><code>/api/admin/settings</code></td><td>server settings (<code>{values: {key: value}}</code>); secrets are masked on read</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/admin/zlib/limits</code> · <code>/history</code> · <code>/library</code> · <code>/booklists</code></td><td>Z-Library account admin (quota, history re-queue, saved books; booklists not exposed by z-lib's API)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>More curl examples</h4>
+  <pre><code># upload a book
+curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
+  -F "file=@mybook.epub" http://localhost:8480/api/books
+
+# search the store and queue the first result
+curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
+  "http://localhost:8480/api/zlib/search?q=project+hail+mary"
+curl -H "Authorization: Bearer bp_YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"id":"&lt;id from search&gt;","name":"Project Hail Mary","authors":"Andy Weir"}' \
+  http://localhost:8480/api/zlib/queue
+
+# save reading position (same call the web reader makes)
+curl -X PUT -H "Authorization: Bearer bp_YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"cfi":"epubcfi(/6/14)","pct":42}' http://localhost:8480/api/books/11/progress
+
+# send a book to your Kindle
+curl -H "Authorization: Bearer bp_YOUR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"device_id":1}' http://localhost:8480/api/books/11/send-to-kindle</code></pre>
+</section>
+
+<section data-doc="mcp" hidden>
+  <h3>MCP server</h3>
+  <p>Bookplate exposes an <strong>MCP (Model Context Protocol)</strong> server, so AI
+  agents — Claude Desktop, Claude Code, Cursor and any MCP client — can search your
+  shelf, organize collections, and queue downloads from the stores in natural language.
+  The agent acts <em>as you</em>: it sees your shelf (your books + what's shared with
+  you) and can do everything your account can.</p>
+
+  <h4>1. Create an API token</h4>
+  <p><em>Settings → API</em> → give it a label like “Claude” → <strong>Create token</strong>.
+  Copy the <code>bp_…</code> value immediately — it is shown once.</p>
+
+  <h4>2. Connect your client</h4>
+  <p>Endpoint: <code>http://&lt;your-server&gt;:8480/mcp</code> (streamable HTTP,
+  authenticated with your token header).</p>
+
+  <p><strong>Claude Code</strong> (terminal):</p>
+  <pre><code>claude mcp add --transport http bookplate http://your-server:8480/mcp \
+  --header "Authorization: Bearer bp_YOUR_TOKEN"</code></pre>
+
+  <p><strong>Claude Desktop, Cursor &amp; other JSON-configured clients</strong>:</p>
+  <pre><code>{
+  "mcpServers": {
+    "bookplate": {
+      "type": "http",
+      "url": "http://your-server:8480/mcp",
+      "headers": { "Authorization": "Bearer bp_YOUR_TOKEN" }
+    }
+  }
+}</code></pre>
+
+  <p class="result-sub">Accessing your server over the internet? Use its HTTPS address in
+  the URL — the token crosses the network on every call. Treat the token like a password:
+  anyone holding it has your account.</p>
+
+  <h4>Tools</h4>
+  <table>
+    <thead><tr><th>Tool</th><th>Arguments</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>search_library</code></td><td><code>query</code></td><td>full-text search of your visible books (title/authors/categories/ISBN); empty lists the 200 most recent</td></tr>
+      <tr><td><code>get_book</code></td><td><code>book_id</code></td><td>full metadata for one book</td></tr>
+      <tr><td><code>list_collections</code></td><td>—</td><td>your collections with book counts</td></tr>
+      <tr><td><code>create_collection</code></td><td><code>name, book_ids?</code></td><td>create a collection, optionally filing books into it</td></tr>
+      <tr><td><code>add_to_collection</code></td><td><code>collection_id, book_ids</code></td><td>add books to an existing collection</td></tr>
+      <tr><td><code>search_store</code></td><td><code>query, source?</code></td><td>search Z-Library or Anna's Archive (<code>"zlibrary"</code>/<code>"annas"</code>, default: whichever is configured)</td></tr>
+      <tr><td><code>queue_book</code></td><td><code>source, id, name?, …</code></td><td>queue a store result for download (fields come from <code>search_store</code> rows)</td></tr>
+      <tr><td><code>list_queue</code></td><td>—</td><td>your download jobs with statuses</td></tr>
+      <tr><td><code>remetadata</code></td><td><code>book_id, query?</code></td><td>re-run metadata extraction/enrichment (fix junk titles); optional “Author - Title” hint</td></tr>
+      <tr><td><code>refetch_cover</code></td><td><code>book_id</code></td><td>re-fetch a book's thumbnail</td></tr>
+      <tr><td><code>update_book</code></td><td><code>book_id, title?, authors?, …</code></td><td>explicitly set metadata fields; empty strings are ignored</td></tr>
+    </tbody>
+  </table>
+
+  <p class="result-sub">Downloads are queued into the shared queue and respect the
+  Z-Library daily quota like everything else. The agent proposes; nothing happens that
+  your account couldn't do from the UI.</p>
+</section>
+
+<section data-doc="opds" hidden>
+  <h3>OPDS catalog</h3>
+  <p>Bookplate publishes your shelf as an <strong>OPDS 1.2</strong> catalog — the standard
+  way reader apps browse and download from a library. Point your iOS reader app at:</p>
+  <pre><code>http://&lt;your-server&gt;:8480/opds</code></pre>
+  <p>Sign in with your <strong>Bookplate username and password</strong> (HTTP Basic auth) —
+  not an API token. You'll see every book you own plus books shared with you, with covers,
+  descriptions and one-tap downloads.</p>
+
+  <h4>Adding the catalog on iOS</h4>
+  <ul>
+    <li><strong>KyBook 3</strong> — Network → OPDS catalogs → <strong>+</strong> → enter
+    the URL, your username and password.</li>
+    <li><strong>MapleRead</strong> — Shelf → OPDS → <strong>+</strong> → enter the URL
+    and credentials.</li>
+    <li><strong>Yomu</strong> — Catalogs → <strong>+</strong> → OPDS → enter the URL
+    and credentials.</li>
+  </ul>
+  <p class="result-sub">Reading progress is not synced through OPDS — it's a download
+  channel. Read in the Bookplate web reader (or download from it) to keep your position
+  across devices.</p>
+
+  <div class="docs-warn">
+    <strong>Plain-HTTP caution.</strong> Basic auth sends your username and password
+    cleartext on every request. On a trusted home LAN this is fine; for anything wider,
+    put a TLS reverse proxy (e.g. Caddy) in front and use the
+    <code>https://</code> address in your reader app.
+  </div>
+</section>
+
+<section data-doc="kindle" hidden>
+  <h3>Send to Kindle</h3>
+  <p>One click on any shelf card (<code>⋯</code> menu → <strong>Send to Kindle</strong>)
+  emails the book to your Kindle through Amazon's document gateway. Kindle accepts
+  <strong>EPUB and PDF</strong>; other formats are converted where possible or rejected
+  by Amazon.</p>
+
+  <h4>One-time setup</h4>
+  <ol>
+    <li><strong>Register your device</strong> — <em>Settings → Kindle devices</em> → add a
+    label and your Kindle's address (find it in Amazon → Manage Your Content and Devices →
+    Preferences → Personal Document Settings; it ends in <code>@kindle.com</code>).</li>
+    <li><strong>Approve the sender</strong> — add the server's sender email to your
+    Amazon account's <em>Approved Personal Document E-mail List</em> (same Preferences
+    page). Admins see the configured sender address under <em>Admin → App settings →
+    Send to Kindle</em>; otherwise ask your admin for it.</li>
+  </ol>
+  <p class="result-sub">Not arriving? Check the approved-sender address matches exactly,
+  look in your Kindle's Personal Documents library and your email spam folder, and make
+  sure the book is EPUB or PDF. The server admin configures the SMTP gateway once, under
+  <em>Admin → App settings</em>; sending stays disabled until then.</p>
+</section>
+
+<section data-doc="selfhost" hidden>
+  <h3>Self-hosting</h3>
+  <p>Bookplate ships as a multi-arch Docker image (<code>amd64</code> + <code>arm64</code>
+  — x86 servers, Apple Silicon, Raspberry Pi, ARM NAS). Everything lives in one volume,
+  <code>/app/data</code>: the SQLite database, book files and covers. <strong>Backup =
+  copy that volume.</strong></p>
+
+  <pre><code># quick start
+docker run -d --name bookplate -p 8480:8480 \
+  -v bookplate-data:/app/data ghcr.io/bacnh85/bookplate:latest
+
+# or with compose (recommended)
+docker compose up -d
+# then open http://localhost:8480</code></pre>
+
+  <h4>Image tags</h4>
+  <table>
+    <thead><tr><th>Tag</th><th>What</th></tr></thead>
+    <tbody>
+      <tr><td><code>latest</code></td><td>newest build from <code>main</code></td></tr>
+      <tr><td><code>main</code></td><td>current <code>main</code> (same as <code>latest</code>)</td></tr>
+      <tr><td><code>1.2.3</code>, <code>1.2</code></td><td>release builds</td></tr>
+      <tr><td><code>sha-&lt;commit&gt;</code></td><td>exact commit a running container came from</td></tr>
+    </tbody>
+  </table>
+
+  <h4>First boot</h4>
+  <p>On an empty database the app creates the admin account itself: username from
+  <code>BOOKPLATE_ADMIN_USER</code> (default <code>admin</code>); password from
+  <code>BOOKPLATE_ADMIN_PASS</code>, or one is <strong>generated</strong> and printed once
+  to the container log and saved to <code>data/initial_admin_password</code> — read it,
+  sign in, then delete the file. After first login, configure everything in the UI under
+  <em>Admin → Settings</em> (Z-Library, Anna's Archive, AI, SMTP, registration) — values
+  live in the database; no provider env vars, no restarts.</p>
+
+  <h4>Environment variables (all optional)</h4>
+  <table>
+    <thead><tr><th>Var</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>BOOKPLATE_ADMIN_USER</code></td><td>bootstrap admin username — only used while the users table is empty</td></tr>
+      <tr><td><code>BOOKPLATE_ADMIN_PASS</code></td><td>bootstrap admin password — if unset, generated (log + <code>initial_admin_password</code>)</td></tr>
+      <tr><td><code>BOOKPLATE_DATA_DIR</code></td><td>data directory override (non-default volume mounts)</td></tr>
+    </tbody>
+  </table>
+
+  <h4>Backup, restore &amp; migration</h4>
+  <p>Stop the server, copy the volume (or the host <code>data/</code> dir), done. Moving a
+  local install into a named volume:</p>
+  <pre><code>docker run --rm -v bookplate-data:/dest -v "$PWD/data":/src:ro alpine \
+  sh -c 'cp -a /src/. /dest/ &amp;&amp; chown -R 1000:1000 /dest'</code></pre>
+  <p class="result-sub">The <code>chown</code> matters: the container runs as uid 1000 —
+  without it the migrated database is unwritable and the container crash-loops. Binding a
+  host directory instead of a named volume? Pre-create it with the right owner:
+  <code>mkdir -p data &amp;&amp; sudo chown 1000:1000 data</code>.</p>
+
+  <h4>Security &amp; operations</h4>
+  <ul>
+    <li>The server is plain HTTP — put a TLS reverse proxy (e.g. Caddy) in front for
+    anything beyond a trusted LAN (OPDS and the reader apps use basic auth).</li>
+    <li>A healthcheck is built in; <code>docker ps</code> shows <code>healthy</code> once up.</li>
+    <li>Local development: <code>python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r
+    requirements.txt</code>, then <code>scripts/serve.sh</code> (binds
+    <code>127.0.0.1:8480</code>; <code>HOST=0.0.0.0</code> for LAN testing).</li>
+  </ul>
+</section>
+
+<section data-doc="admin" hidden>
+  <h3>Admin guide</h3>
+  <p>Admin-only screens live under <em>Admin → Users / App settings / Z-Library</em>.</p>
+
+  <h4>Users &amp; registration</h4>
+  <p>Registration defaults to <strong>approval required</strong>: new signups land as
+  <em>pending</em>, can't sign in, and wait in <em>Admin → Users</em>. There you can
+  approve, enable/disable, change roles, and reset passwords. The last active admin can't
+  be demoted or disabled. In <em>App settings</em> you can switch registration to
+  <strong>closed</strong>.</p>
+
+  <h4>App settings</h4>
+  <ul>
+    <li><strong>Z-Library</strong> — account email + password and a mirror (pick a healthy
+    domain with <code>zlib doctor --eapi</code>). All users share this one account and its
+    daily download quota through a single FIFO queue that waits out exhausted limits and
+    retries transient failures (3 attempts, 5/30 min backoff).</li>
+    <li><strong>Anna's Archive</strong> — member secret key + mirror. Downloads work with
+    or without a membership (members get the fast API path; free accounts automatically
+    use the slow partner servers, waitlists included). If search starts failing with a bot
+    check, open the mirror once in a normal browser <em>on the server's network</em> — the
+    DDoS-Guard clearance is per-IP.</li>
+    <li><strong>AI assist</strong> — enable, then set an API key for any OpenAI-compatible
+    endpoint. Defaults expect z.ai: base URL
+    <code>https://api.z.ai/api/paas/v4</code>, model <code>glm-4.6</code>. A wrong base
+    URL shows up as “AI endpoint returned junk {404_NOT_FOUND}” for every request —
+    that's a route problem, not a model problem.</li>
+    <li><strong>Send to Kindle</strong> — the server-wide SMTP transport (host, port,
+    STARTTLS/SSL, credentials) and the sender address users must approve in their Amazon
+    account.</li>
+    <li><strong>Registration</strong> — approval-required or closed.</li>
+  </ul>
+
+  <h4>Z-Library administration</h4>
+  <p>The <em>Z-Library</em> tab shows the account's daily quota, its download history
+  (one click re-queues any item) and the account's saved books (“My library”). Booklists
+  are not exposed by z-lib's API and show as unavailable.</p>
+
+  <p class="result-sub">Secrets (store passwords, keys, SMTP password) are stored in the
+  database and masked in the API — the “clear” link empties a field. Same on-disk trust
+  boundary as the data volume itself: whoever can read <code>/app/data</code> can read
+  them, so protect the volume.</p>
+</section>
+
+<section data-doc="faq" hidden>
+  <h3>FAQ &amp; troubleshooting</h3>
+
+  <h4>I can't sign in</h4>
+  <p>New accounts need admin approval (default registration mode) — you'll see “waiting
+  for admin approval” after signing up. Disabled accounts are locked out everywhere. Ask
+  an admin, or if this is your server, approve yourself under <em>Admin → Users</em>.</p>
+
+  <h4>The download queue says the Z-Library limit is exhausted</h4>
+  <p>All users share one account with a daily quota. The queue waits and re-checks
+  automatically — jobs resume when the limit resets. Failed jobs retry on their own
+  (3 attempts, 5/30 min backoff); you can also retry or cancel from the Downloads panel.</p>
+
+  <h4>Uploading the same file twice</h4>
+  <p>Re-uploads of an identical file dedup instantly (content-addressed storage by
+  SHA-256). A <em>logical</em> duplicate — same normalized title + author, different file,
+  e.g. two scans — is flagged after upload so you can compare and remove one.</p>
+
+  <h4>Which formats can I upload?</h4>
+  <p>PDF, EPUB, MOBI, AZW3, FB2 and CBZ. Everything gets automatic metadata, a guaranteed
+  cover (embedded art → PDF page-1 → enrichment → generated placeholder), and full-text
+  search. EPUB/MOBI/AZW3/FB2 read in the in-browser reader with synced progress; PDF and
+  CBZ stream page-by-page.</p>
+
+  <h4>Anna's Archive search suddenly fails</h4>
+  <p>Usually the DDoS-Guard bot check: decisions are per-IP, so if your server's IP is
+  flagged, complete the checkbox once in a normal browser on the same network. Mirrors
+  also rotate — if the default dies, set a current mirror in <em>Admin → App settings</em>.</p>
+
+  <h4>“AI endpoint returned junk {404_NOT_FOUND}”</h4>
+  <p>The AI base URL is wrong (every request 404s, which looks like a model problem).
+  Set it to <code>https://api.z.ai/api/paas/v4</code> under <em>Admin → App settings</em>
+  — not an <code>/openai/v1</code>-style path.</p>
+
+  <h4>My reader app can't connect to OPDS</h4>
+  <p>Checklist: the URL is <code>http://&lt;host&gt;:8480/opds</code> (no <code>/api</code>);
+  you're using your <strong>username and password</strong>, not an API token; your account
+  is approved; and — over the internet — the server is behind HTTPS, since some networks
+  block plain-HTTP basic auth.</p>
+
+  <h4>Kindle email never arrives</h4>
+  <p>The sender address must be on your Amazon <em>Approved Personal Document E-mail
+  List</em>, the book must be EPUB or PDF, and the SMTP gateway must be configured by the
+  admin. Check the Kindle's Personal Documents library and your spam folder. See the
+  Send to Kindle page.</p>
+
+  <h4>Where do I manage API tokens?</h4>
+  <p><em>Settings → API</em>. Tokens are shown once at creation and stored hashed — if you
+  lose one, create a new one and revoke the old. Anyone holding a token has your account.</p>
+
+  <h4>How do I back everything up?</h4>
+  <p>Everything lives in the one data volume (<code>/app/data</code>, or your local
+  <code>data/</code> dir): database, books, covers, settings. Copy it while the server is
+  stopped. See Self-hosting.</p>
+</section>
