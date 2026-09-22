@@ -37,6 +37,24 @@ class TestIndexHtml(unittest.TestCase):
         self.assertRegex(INDEX.read_text(), r'src="/app\.js\?v=\d+"')
 
 
+class TestAssetVersioning(unittest.TestCase):
+    """Cloudflare may override the origin's Cache-Control: no-cache with a 1-year
+    browser TTL on static assets, pinning stale JS after every deploy (it did).
+    HTML is served no-cache, so stamped asset URLs (?v=N) are the propagation
+    mechanism: new HTML must always reference versioned JS/CSS. Bump ?v= on
+    every app.js/app.css/reader.js change."""
+
+    READER_HTML = WEB / "reader.html"
+
+    def test_reader_html_stamps_assets(self):
+        src = self.READER_HTML.read_text()
+        self.assertRegex(src, r'href="/app\.css\?v=\d+"')
+        self.assertRegex(src, r'src="/reader\.js\?v=\d+"')
+
+    def test_index_html_stamps_css(self):
+        self.assertRegex(INDEX.read_text(), r'href="/app\.css\?v=\d+"')
+
+
 class TestReaderSettings(unittest.TestCase):
     """reader.js persists each reading preference via put(k) -> localStorage
     key `reader-<k>` and reads it back with get("reader-<k>"). A key that is

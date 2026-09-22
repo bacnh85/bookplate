@@ -111,7 +111,9 @@ seek.addEventListener("input", () => {
 });
 
 async function openFoliate(file) {
-  await import("/foliate-js/view.js");  // side-effect: defines <foliate-view>
+  // ?v=2 defeats any stale-cached foliate (Cloudflare pins static JS for 1y if
+  // Browser Cache TTL misconfigures to override the origin's no-cache)
+  await import("/foliate-js/view.js?v=2");  // side-effect: defines <foliate-view>
   view = document.createElement("foliate-view");
   $("#viewer").prepend(view);
   await view.open(file);

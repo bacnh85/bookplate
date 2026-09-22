@@ -147,6 +147,12 @@ stop the server and copy the whole local `data/` dir into the volume — with co
 docker run --rm -v bookplate-data:/dest -v "$PWD/data":/src:ro alpine sh -c 'cp -a /src/. /dest/ && chown -R 1000:1000 /dest'
 ```
 
+Frontend caching: HTML is served `Cache-Control: no-cache`, but proxies/CDNs in front
+(most notably Cloudflare's default Browser Cache TTL) may pin JS/CSS for a long time.
+Asset URLs are therefore stamped (`/app.css?v=2`, `/app.js?v=10`, `/reader.js?v=2`) —
+bump the `?v=` number in `index.html`/`reader.html` on every JS/CSS change.
+`scripts/test_frontend.py` asserts the stamping is present.
+
 The `chown` matters: `cp -a` keeps the source uid (501 on macOS, your uid on Linux) but
 the container runs as uid 1000 — without it the migrated DB is unwritable and the
 container crash-loops.
