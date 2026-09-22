@@ -20,7 +20,7 @@ from .annas_client import AnnasConfigError, AnnasUnavailable, annas
 from .auth import AdminDep, UserDep, admin_required, hash_password, make_token, verify_password
 from .auth import make_api_token
 from .kindle import KindleError, smtp_ready, send as kindle_send
-from .storage import book_path, cover_path, sha256_file, store_file
+from .storage import book_path, cover_path, ensure_linearized, linearized_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
 from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
 from . import zlib_eapi
@@ -346,7 +346,7 @@ async def upload(file: UploadFile = File(...), user=UserDep):
 
 
 @app.get("/api/books/{book_id}/file")
-def book_file(book_id: int, dl: int = 0, user=UserDep):
+async def book_file(book_id: int, dl: int = 0, reader: int = 0, user=UserDep):
     with db.conn() as con:
         if not _book_visible(con, user["id"], book_id):
             _raise404()
@@ -354,6 +354,25 @@ def book_file(book_id: int, dl: int = 0, user=UserDep):
     path = book_path(b["sha256"], b["ext"])
     if not path.exists():
         _raise404()
+    # reader=1: prefer a linearized PDF derivative (regenerable cache keyed by
+    # the original sha — identity/dedupe/OPDS always see the original bytes).
+    # Build on miss off the event loop; corrupt/encrypted PDFs fall back.
+    # Failed builds are negative-cached so a shared corrupt PDF can't be mined
+    # for CPU by re-requesting it (retry after _LIN_FAIL_TTL).
+    if reader and b["ext"] == "pdf":
+        sha = b["sha256"]
+        failed_at = _LIN_FAILED.get(sha)
+        now = time.monotonic()
+        if failed_at and now - failed_at < _LIN_FAIL_TTL:
+            lin = None  # recently failed — don't burn CPU again
+        else:
+            lin = await asyncio.to_thread(ensure_linearized, path, sha)
+            if lin is None:
+                _LIN_FAILED[sha] = now
+            else:
+                _LIN_FAILED.pop(sha, None)
+        if lin:
+            path = lin
     dispo = "attachment" if dl else "inline"
     return FileResponse(path, filename=path.name,
                         headers={"Content-Disposition": f'{dispo}; filename="{path.name}"'})
@@ -389,6 +408,8 @@ def remove_book(book_id: int, user=UserDep):
         if left == 0 and shared == 0:
             con.execute("DELETE FROM books WHERE id=?", (book_id,))  # FTS trigger cleans up
             book_path(b["sha256"], b["ext"]).unlink(missing_ok=True)
+            if b["ext"] == "pdf":
+                linearized_path(b["sha256"]).unlink(missing_ok=True)  # regenerable derivative
             if b["cover_ext"]:
                 cover_path(b["sha256"], b["cover_ext"]).unlink(missing_ok=True)
     return {"ok": True}
@@ -860,6 +881,11 @@ class ChatReq(BaseModel):
 
 
 _AI_RATE: dict[int, list[float]] = {}
+
+# linearize build failures (sha -> monotonic time): negative cache so corrupt or
+# password-protected PDFs can't be re-mined for CPU on every reader=1 request
+_LIN_FAILED: dict[str, float] = {}
+_LIN_FAIL_TTL = 3600.0
 
 
 def _ai_throttle(uid: int) -> bool:

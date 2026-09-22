@@ -119,8 +119,15 @@ export const makePDF = async file => {
             transport.onDataRange(begin, chunk)
         })
     }
+    // ponytail: pdf.js still walks this file's xref from EOF (measured — an
+    // initialData head-prefetch made it slower); linearize + 256K chunks +
+    // no-autofetch is the 40%-faster plateau. Revisit if pdf.js ships
+    // first-page hint parsing for range transports.
     const pdf = await pdfjsLib.getDocument({
         range: transport,
+        rangeChunkSize: 262144,  // 64K default = 16 round-trips/MB over HTTP Range
+        disableAutoFetch: true,
+        disableStream: true,
         cMapUrl: pdfjsPath('cmaps/'),
         standardFontDataUrl: pdfjsPath('standard_fonts/'),
         isEvalSupported: false,

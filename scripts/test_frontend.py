@@ -83,6 +83,50 @@ class TestReaderSettings(unittest.TestCase):
         self.assertRegex(src, r'parseFloat\(localStorage\.getItem\("reader-font"\)\) \|\| 17')
 
 
+class TestReaderExperience(unittest.TestCase):
+    """Yomu-style reader contracts: bundled webfont + immersive chrome +
+    sectioned seek bar + book typography (justify/hyphens) + the ?reader=1
+    derivative flag on PDF fetches."""
+
+    READER_HTML_SRC = (WEB / "reader.html").read_text()
+
+    def test_reader_html_preloads_and_defines_webfont(self):
+        src = self.READER_HTML_SRC
+        self.assertIn('href="/fonts/Literata-VF.woff2"', src)
+        self.assertIn("@font-face", src)
+        self.assertIn("Literata-Italic-VF.woff2", src)
+
+    def test_reader_html_has_sectioned_seek_and_chrome(self):
+        src = self.READER_HTML_SRC
+        for el_id in ("ticks", "section-label", "zone-center", "top-bar", "bottom-bar"):
+            self.assertIn(f'id="{el_id}"', src)
+
+    def test_reader_js_uses_section_progress_apis(self):
+        src = READER.read_text()
+        self.assertIn("getSectionFractions", src)  # chapter ticks
+        self.assertIn("tocItem", src)              # section label on relocate
+
+    def test_reader_js_justifies_with_hyphenation(self):
+        src = READER.read_text()
+        self.assertIn("text-align: justify", src)
+        self.assertIn("hyphens: auto", src)
+        # the old sledgehammer that flattened heading hierarchy must stay gone
+        self.assertNotIn("* { font-size", src)
+
+    def test_reader_pdf_fetches_use_reader_flag(self):
+        src = READER.read_text()
+        self.assertIn('/file?reader=1', src)
+
+    def test_pdfjs_range_chunk_size_bumped(self):
+        src = (WEB / "foliate-js" / "pdf.js").read_text()
+        self.assertIn("rangeChunkSize: 262144", src)
+
+    def test_reader_fonts_dir_exists(self):
+        fonts = WEB / "fonts"
+        self.assertTrue((fonts / "Literata-VF.woff2").exists())
+        self.assertTrue((fonts / "Literata-Italic-VF.woff2").exists())
+
+
 class TestDocsHtml(unittest.TestCase):
     """web/docs.html is the in-app documentation fragment: app.js fetches it and
     injects it into #docs-body via innerHTML, so it must stay a pure-HTML

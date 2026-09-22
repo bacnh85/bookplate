@@ -60,7 +60,7 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
       <tr><td><code>GET</code></td><td><code>/api/books?q=</code></td><td>your shelf (own + shared), full-text search across title/author/categories/ISBN; quoted phrases allowed</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/books/{id}</code></td><td>full metadata + your reading progress</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/books</code></td><td>upload — multipart <code>file=@book.epub</code>; PDF, EPUB, MOBI, AZW3, FB2, CBZ; auto-metadata + dedup</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/books/{id}/file</code></td><td>the book file (add <code>?dl=1</code> for a download attachment); supports HTTP Range</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/books/{id}/file</code></td><td>the book file (add <code>?dl=1</code> for a download attachment); supports HTTP Range; add <code>?reader=1</code> to prefer the linearized PDF derivative (the in-app reader does — originals are never modified)</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/books/{id}/cover</code></td><td>cover image</td></tr>
       <tr><td><code>PATCH</code></td><td><code>/api/books/{id}</code></td><td>edit metadata fields (title, authors, year, …) — uploader or admin</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/books/{id}/remetadata</code></td><td><code>{query}</code> optional “Author - Title” hint — re-runs the whole extraction/enrichment chain</td></tr>
@@ -402,7 +402,9 @@ docker compose up -d
   <p>PDF, EPUB, MOBI, AZW3, FB2 and CBZ. Everything gets automatic metadata, a guaranteed
   cover (embedded art → PDF page-1 → enrichment → generated placeholder), and full-text
   search. EPUB/MOBI/AZW3/FB2 read in the in-browser reader with synced progress; PDF and
-  CBZ stream page-by-page.</p>
+  CBZ stream page-by-page. PDFs additionally get a linearized copy generated for the
+  in-app reader (<code>?reader=1</code>), so first pages appear faster — the original file
+  is never modified and downloads/Kindle sends always use it.</p>
 
   <h4>Anna's Archive search suddenly fails</h4>
   <p>Usually the DDoS-Guard bot check: decisions are per-IP, so if your server's IP is
