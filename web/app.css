@@ -338,7 +338,8 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
   header { padding-inline: 12px; }
   .admin-row, #admin-user-form { flex-wrap: wrap; }
   .admin-row input, #admin-user-form input, #admin-user-form select { flex: 1; min-width: 140px; }
-  .stat { flex: 1; min-width: 0; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .stat { padding: 16px; }
   .result-row { grid-template-columns: 20px 64px 1fr; }
   .result-row img { width: 64px; height: 96px; }
   .result-meta {
