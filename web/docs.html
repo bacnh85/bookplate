@@ -350,7 +350,8 @@ docker compose up -d
   <h4>App settings</h4>
   <ul>
     <li><strong>Z-Library</strong> — account email + password and a mirror (pick a healthy
-    domain with <code>zlib doctor --eapi</code>). All users share this one account and its
+    domain with <code>zlib doctor --eapi</code> — though the app also runs this
+    automatically when a login fails and remembers the mirror it picked). All users share this one account and its
     daily download quota through a single FIFO queue that waits out exhausted limits and
     retries transient failures (3 attempts, 5/30 min backoff).</li>
     <li><strong>Anna's Archive</strong> — member secret key + mirror. Downloads work with

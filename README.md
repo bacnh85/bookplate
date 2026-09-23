@@ -267,6 +267,9 @@ zlib doctor --eapi                        # pick a 'healthy' domain (e.g. z-lib.
 zlib login --eapi --email you@x --password ... --domain https://z-lib.gd
 ```
 
+If the configured mirror dies later, the app re-runs `zlib doctor --eapi`, retries
+login on a different healthy domain, and remembers it in Admin → Settings.
+
 ### Anna's Archive (member key + free slow downloads)
 
 Anna's Archive has one official member API — fast downloads — and no search API:

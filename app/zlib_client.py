@@ -86,8 +86,26 @@ class Zlib:
         email, password = settings.get("zlib.email"), settings.get("zlib.password")
         return (email, password) if email and password else None
 
+    async def _healthy_domain(self, exclude: str) -> str | None:
+        """First 'healthy' EAPI domain from `zlib doctor --eapi --json`, skipping
+        `exclude`. None when doctor finds nothing / fails (caller keeps the error)."""
+        try:
+            rc, out, err = await self._run("doctor", "--eapi", "--json", timeout=90)
+            if rc != 0:
+                return None
+            for d in json.loads(out):
+                if d.get("status") == "healthy" and d.get("domain", "").rstrip("/") != exclude:
+                    return d["domain"].rstrip("/")
+        except (ValueError, TypeError, AttributeError):
+            return None  # junk doctor output — never mask the original login error
+        return None
+
     async def _login(self) -> None:
-        """Fresh login, overwriting any stale session."""
+        """Fresh login, overwriting any stale session. If the configured mirror
+        rejects the login, auto-heal: probe candidates with `zlib doctor --eapi`,
+        retry once on a different healthy one, and persist it to settings
+        (_ensure_session re-logins whenever session.json's domain differs from
+        settings, so an unpersisted switch would flap back to the dead mirror)."""
         creds = self._creds()
         if not creds:
             raise ZlibConfigError("Z-Library account not configured — set it in Admin → Settings")
@@ -96,7 +114,18 @@ class Zlib:
             "login", "--eapi", "--email", creds[0], "--password", creds[1],
             "--domain", domain, timeout=120)
         if rc != 0:
-            raise ZlibUnavailable(f"Z-Library login failed: {(err or out).strip()[:200]}")
+            alt = await self._healthy_domain(exclude=domain.rstrip("/"))
+            if alt:
+                rc, out, err = await self._run(
+                    "login", "--eapi", "--email", creds[0], "--password", creds[1],
+                    "--domain", alt, timeout=120)
+                if rc == 0:
+                    settings.set("zlib.domain", alt)
+                    return
+            raise ZlibUnavailable(
+                f"Z-Library login failed: {(err or out).strip()[:200]}"
+                + (" — all doctor-reported healthy mirrors failed too" if alt else
+                   " — run `zlib doctor --eapi` and set a healthy mirror in Admin → Settings"))
 
     async def _ensure_session(self) -> None:
         """Login from env/DB creds when the CLI has no session, and RE-login when

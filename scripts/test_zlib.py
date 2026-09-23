@@ -291,6 +291,86 @@ class ZlibTests(unittest.TestCase):
         self.assertNotIn("login", calls)
         (cfg / "session.json").unlink(missing_ok=True)
 
+    def test_login_heals_dead_domain_via_doctor(self):
+        """Mirror died mid-flight: login fails, doctor picks a different healthy
+        domain, retry succeeds, and the healed domain is persisted to settings."""
+        _settings.set("zlib.domain", "https://z-lib.gd")  # pin start; reset after (persist leaks)
+        self.addCleanup(_settings.set, "zlib.domain", "")
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            calls.append(args[0])
+            if args[0] == "login":
+                if calls.count("login") == 1:
+                    return 1, "", "https://z-dead.gd is not usable for EAPI (http_error)"
+                return 0, "", ""
+            if args[0] == "doctor":
+                return 0, json.dumps([
+                    {"domain": "https://z-dead.gd", "status": "network_error"},
+                    {"domain": "https://z-live.sk/", "status": "healthy"},
+                ]), ""
+            return 0, "", ""
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            run(Zlib()._login())
+        self.assertEqual(calls, ["login", "doctor", "login"])
+        self.assertIn("z-live.sk", _settings.get("zlib.domain"))
+
+    def test_login_no_heal_when_doctor_finds_nothing(self):
+        """Doctor finds no usable alternative (or fails): raise, leave settings alone."""
+        _settings.set("zlib.domain", "https://z-lib.gd")
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            calls.append(args[0])
+            if args[0] == "doctor":
+                return 0, json.dumps([
+                    {"domain": "https://z-lib.gd", "status": "healthy"},  # only the dead one
+                ]), ""
+            return 1, "", "login failed"
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            with self.assertRaises(ZlibUnavailable) as cm:
+                run(Zlib()._login())
+        self.assertEqual(calls, ["login", "doctor"])
+        self.assertNotIn("healthy mirrors failed", str(cm.exception))
+        self.assertEqual(_settings.get("zlib.domain", ""), "https://z-lib.gd")  # untouched
+
+    def test_login_no_heal_on_junk_doctor_output(self):
+        async def fake_run(self, *args, **k):
+            if args[0] == "doctor":
+                return 0, "<html>junk</html>", ""
+            return 1, "", "not usable for EAPI"
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            with self.assertRaises(ZlibUnavailable):
+                run(Zlib()._login())
+
+    def test_login_retry_failure_reports_second_error(self):
+        """Healed domain also rejects login: error carries the SECOND attempt's text."""
+        _settings.set("zlib.domain", "https://z-lib.gd")  # pin start
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            if args[0] == "doctor":
+                return 0, json.dumps([{"domain": "https://z-live.sk", "status": "healthy"}]), ""
+            if calls.count("login") == 1:
+                return 1, "", "first mirror dead"
+            return 1, "", "second mirror also dead"
+
+        async def fake_run_with_calls(self, *args, **k):
+            calls.append(args[0])
+            return await fake_run(self, *args, **k)
+
+        with mock.patch.object(Zlib, "_run", fake_run_with_calls):
+            with self.assertRaises(ZlibUnavailable) as cm:
+                run(Zlib()._login())
+        self.assertIn("second mirror also dead", str(cm.exception))
+        self.assertIn("healthy mirrors failed", str(cm.exception))
+
+    # setup for the retry test must pin the domain BEFORE fake_run exists
+    # (pollution guard: other tests may have persisted a different domain)
+
 
 
 
