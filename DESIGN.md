@@ -11,7 +11,7 @@ colors:
   accent-ink: "#FFFDF8"  # text on accent
   danger: "#8A3B3B"
 typography:
-  display: "'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif"
+  display: "Georgia, 'Palatino Linotype', Palatino, serif"
   body: "system-ui, -apple-system, 'Segoe UI', sans-serif"
   scale: [0.8125rem, 0.875rem, 1rem, 1.25rem, 1.625rem, 2.5rem]  # sm base lg xl display
 rounded: {sm: 4px, md: 8px}

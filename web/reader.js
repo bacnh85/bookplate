@@ -36,7 +36,6 @@ const themeColors = () => {
 };
 const FONTS = {
   literata: "'Literata', Georgia, serif",
-  serif: "'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif",
   georgia: "Georgia, 'Times New Roman', serif",
   sans: "system-ui, -apple-system, 'Segoe UI', sans-serif",
 };
@@ -47,8 +46,19 @@ const FONT_URLS = {
     font-weight: 200 900; font-style: normal; font-display: swap; }
   @font-face { font-family: 'Literata';
     src: url('${new URL('/fonts/Literata-Italic-VF.woff2', location.href)}') format('woff2');
-    font-weight: 200 900; font-style: italic; font-display: swap; }`,
+    font-weight: 200 900; font-style: italic; font-display: swap; }
+  @font-face { font-family: 'Literata';
+    src: url('${new URL('/fonts/Literata-VF-viet.woff2', location.href)}') format('woff2');
+    font-weight: 200 900; font-style: normal; font-display: swap;
+    unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+  @font-face { font-family: 'Literata';
+    src: url('${new URL('/fonts/Literata-Italic-VF-viet.woff2', location.href)}') format('woff2');
+    font-weight: 200 900; font-style: italic; font-display: swap;
+    unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }`,
 };
+/* stale/removed font keys (e.g. pre-2026-09 'serif') heal to the default —
+   otherwise the select renders blank and applyStyles() injects no @font-face */
+if (!FONTS[settings["font-family"]]) put("font-family", "literata");
 
 let view = null;
 let fontPx = parseFloat(localStorage.getItem("reader-font")) || 17;  // size — separate key from font-family

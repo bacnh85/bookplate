@@ -149,6 +149,29 @@ class TestReaderExperience(unittest.TestCase):
         self.assertTrue((fonts / "Literata-VF.woff2").exists())
         self.assertTrue((fonts / "Literata-Italic-VF.woff2").exists())
 
+    def test_reader_vietnamese_font_subset_wired(self):
+        """Vietnamese subset @font-face rules must exist in both reader.html and
+        reader.js (blob: iframes redeclare fonts), with Google's unicode-range.
+        Iowan (old display + 'Iowan Serif' option) lacks U+1EDA-1EF1 — the
+        stacks must not lead with it anymore."""
+        vr = "U+1EA0-1EF9"
+        for src in (self.READER_HTML_SRC, READER.read_text()):
+            self.assertIn("Literata-VF-viet.woff2", src)
+            self.assertIn("Literata-Italic-VF-viet.woff2", src)
+            self.assertIn(vr, src)
+        fonts = WEB / "fonts"
+        self.assertTrue((fonts / "Literata-VF-viet.woff2").exists())
+        self.assertTrue((fonts / "Literata-Italic-VF-viet.woff2").exists())
+        # no eager preload for the viet subset — unicode-range must lazy-fetch it
+        # only when a book actually contains Vietnamese codepoints
+        self.assertNotIn('href="/fonts/Literata-VF-viet.woff2"', self.READER_HTML_SRC)
+        # stale/removed stored keys (old 'serif') must heal to the default:
+        # otherwise the select goes blank and applyStyles() injects no @font-face
+        self.assertIn('if (!FONTS[settings["font-family"]]) put("font-family", "literata")', READER.read_text())
+        self.assertNotIn("Iowan", self.READER_HTML_SRC)
+        self.assertNotIn("Iowan", READER.read_text())
+        self.assertNotIn("Iowan", (WEB / "app.css").read_text())
+
 
 class TestDocsHtml(unittest.TestCase):
     """web/docs.html is the in-app documentation fragment: app.js fetches it and

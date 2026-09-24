@@ -9,7 +9,7 @@
   --accent-dk: #63201F;
   --accent-ink: #FFFDF8;
   --danger: #8A3B3B;
-  --font-display: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  --font-display: Georgia, 'Palatino Linotype', Palatino, serif;
   --font-body: system-ui, -apple-system, 'Segoe UI', sans-serif;
   --fs-sm: 0.8125rem; --fs-base: 1rem; --fs-lg: 1.25rem; --fs-xl: 1.625rem; --fs-display: 2.5rem;
   --r-sm: 4px; --r-md: 8px;
