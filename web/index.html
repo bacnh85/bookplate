@@ -4,9 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Bookplate — your ebook library</title>
-<link rel="stylesheet" href="/app.css?v=4">
+<link rel="stylesheet" href="/app.css?v=5">
 </head>
 <body>
+<script>/* DIAG remove */ window.CLICKLOG = [];
+  addEventListener("click", e => window.CLICKLOG.push({x: e.clientX, y: e.clientY,
+    target: (e.target.id || e.target.tagName), trusted: e.isTrusted}), true);
+  </script>
+  <script>/* theme before first paint — no flash of the wrong palette (app.js refines).
+  Same resolution + validation as app.js readTheme(); storage access guarded. */
+  (() => { let t = "auto";
+    try { const s = localStorage.getItem("theme");
+      if (["day", "sepia", "night"].includes(s)) t = s; } catch {}
+    document.body.dataset.theme = t === "auto"
+      ? (matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day") : t;
+  })();</script>
 
 <section id="auth-view" hidden>
   <h1 class="wordmark">Bookplate<span>.</span></h1>
@@ -71,6 +83,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
         </button>
         <span class="spacer"></span>
+        <button class="btn-ghost" id="theme-btn" type="button" title="Theme: auto / day / sepia / night">Auto</button>
         <button class="btn-ghost" id="ai-btn" type="button" hidden>Ask AI</button>
         <button class="btn-ghost" id="downloads-btn" type="button">Downloads<span id="downloads-badge" hidden></span></button>
         <button class="btn-ghost" id="tab-settings" type="button" hidden>Settings</button>
@@ -356,6 +369,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=10"></script>
+<script type="module" src="/app.js?v=11"></script>
 </body>
 </html>

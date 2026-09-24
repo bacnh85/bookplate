@@ -61,6 +61,61 @@ class TestAssetVersioning(unittest.TestCase):
                          r'import\("/foliate-js/view\.js\?v=\d+"\)')
 
 
+class TestTheme(unittest.TestCase):
+    """Library-shell theme feature (Auto/Day/Sepia/Night): the same tokens as
+    the reader. Both surfaces MUST switch via body[data-theme] on the SAME
+    shared token set — a palette hardcoded in either file would leave the app
+    half-dark after dark mode (it did: scrim/skeleton carried light-only rgba)."""
+
+    def test_night_override_swaps_full_palette(self):
+        css = (WEB / "app.css").read_text()
+        for tok in ["--paper", "--card", "--ink", "--ink-soft", "--line",
+                    "--accent", "--accent-ink", "--danger", "color-scheme",
+                    "--e-xs", "--e-sm", "--e-md", "--scrim"]:
+            self.assertRegex(css, re.compile(
+                r'body\[data-theme="night"\]\s*\{[^}]*' + re.escape(tok), re.S),
+                f"night override must set {tok}")
+        # scrim/backdrop overlays consume the token, never hardcoded rgba
+        self.assertEqual([v.strip() for v in re.findall(r'(?:#scrim \{[^}]*background:|dialog::backdrop \{ background: )([^;]+);', css)],
+                         ["var(--scrim)", "var(--scrim)"], "overlay scrims must use --scrim")
+
+    def test_theme_button_and_fouc_guard_exist(self):
+        idx = INDEX.read_text()
+        self.assertIn('id="theme-btn"', idx)
+        # boot script sets the resolved theme from localStorage before CSS paint
+        self.assertRegex(idx, r"localStorage\.getItem\(\"theme\"\)")
+        self.assertIn("prefers-color-scheme: dark", idx)
+
+    def test_theme_cycle_and_auto_resolution(self):
+        src = (WEB / "app.js").read_text()
+        self.assertIn('matchMedia("(prefers-color-scheme: dark)")', src)
+        self.assertIn('addEventListener("change", applyTheme)', src)  # live auto switching
+        # cycle + names must cover exactly the four theme values (structure, not substrings)
+        cycle = re.search(r'THEME_CYCLE = \[([^\]]+)\]', src)
+        self.assertIsNotNone(cycle, "THEME_CYCLE array missing from app.js")
+        names = re.search(r'THEME_NAMES = \{([^}]+)\}', src)
+        self.assertIsNotNone(names, "THEME_NAMES map missing from app.js")
+        values = set(re.findall(r'"(\w+)"', cycle.group(1)))
+        self.assertEqual(values, {"auto", "day", "sepia", "night"})
+        self.assertEqual(set(re.findall(r'(\w+): "', names.group(1))), values,
+                         "THEME_NAMES keys must match THEME_CYCLE values")
+        # storage-safe: reads/writes guarded, invalid values fall back to auto
+        self.assertIn("try {", src[src.index("const readTheme"):src.index("function applyTheme")])
+        self.assertRegex(src, r'THEME_CYCLE\.includes\(t\) \? t : "auto"')
+        self.assertIn('catch { /* blocked: session-only theme */ }', src)
+
+    def test_boot_script_mirrors_appjs_resolution(self):
+        # index.html's pre-paint script must validate against the same value set
+        idx = INDEX.read_text()
+        boot = re.search(r'<script>/\* theme before first paint.*?</script>', idx, re.S)
+        self.assertIsNotNone(boot, "theme boot script missing from index.html")
+        self.assertIn('includes(s)', boot.group(0))
+        self.assertIn('prefers-color-scheme: dark', boot.group(0))
+        for t in ["day", "sepia", "night"]:
+            self.assertIn(f'"{t}"', boot.group(0))
+        self.assertNotIn("localStorage.getItem", boot.group(0).split("try")[0])  # guarded access
+
+
 class TestReaderSettings(unittest.TestCase):
     """reader.js persists each reading preference via put(k) -> localStorage
     key `reader-<k>` and reads it back with get("reader-<k>"). A key that is

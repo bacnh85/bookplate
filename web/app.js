@@ -44,6 +44,30 @@ function xhr(method, path, { body, responseType, onProgress, uploadProgress } = 
 const fmtBytes = (n) => n == null ? "" : n >= 1e9 ? `${(n / 1e9).toFixed(1)} GB`
   : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
 
+/* ---------- theme (auto / day / sepia / night — tokens shared with the reader) ---------- */
+const THEME_CYCLE = ["auto", "day", "sepia", "night"];
+const THEME_NAMES = { day: "Day", sepia: "Sepia", night: "Night", auto: "Auto" };
+const readTheme = () => {  // storage can be blocked (SecurityError) — never trust stored values
+  try {
+    const t = localStorage.getItem("theme");
+    return THEME_CYCLE.includes(t) ? t : "auto";
+  } catch { return "auto"; }
+};
+function applyTheme() {  // "auto" resolves to the OS preference; data-theme carries the resolved value
+  const t = readTheme();
+  document.body.dataset.theme = t === "auto"
+    ? (matchMedia("(prefers-color-scheme: dark)").matches ? "night" : "day")
+    : t;
+  $("#theme-btn").textContent = THEME_NAMES[t];
+}
+$("#theme-btn").onclick = () => {
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(readTheme()) + 1) % THEME_CYCLE.length];
+  try { localStorage.setItem("theme", next); } catch { /* blocked: session-only theme */ }
+  applyTheme();
+};
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+applyTheme();
+
 let me_kindle = false;
 let me_sources = { zlib: false, annas: false, zlib_domain: "", annas_base: "" };
 let me_devices = [], me_role = "";

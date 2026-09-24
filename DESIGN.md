@@ -22,6 +22,7 @@ elevation:
   sm: 0 1px 3px rgba(38,34,28,0.08)          # cards
   md: 0 4px 16px rgba(38,34,28,0.12)         # dialog, book hover lift
 components:
+  theme: Auto (OS prefers-color-scheme)/Day/Sepia/Night — body[data-theme] resolves on the SAME tokens; night swaps the full palette + elevation (--e-*) + --scrim; storage reads guarded (blocked storage -> auto); header #theme-btn cycles, index.html boot script applies before first paint
   button: primary(accent)/ghost(ink on paper)/danger; states default/hover(-dk)/active/translate/focus-visible 2px accent outline offset 2/disabled 40%
   input: 1px line, focus accent border; on card surface
   card: bg card, elevation-sm, radius md, hover raise to md + translateY(-2px)
