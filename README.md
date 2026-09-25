@@ -38,10 +38,12 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   metadata assist (Admin → Settings).
 
 **Library**
-- Upload PDF, EPUB, MOBI, AZW3, FB2, CBZ — drag-and-drop or file picker, sequential
-  batch uploads with per-file progress.
-- **Automatic metadata**: embedded metadata → filename parsing → Google Books /
-  Open Library enrichment → optional AI fallback (any OpenAI-compatible endpoint).
+- Upload PDF, EPUB, MOBI, AZW, AZW3, PRC, FB2, CBZ — drag-and-drop or file picker,
+  sequential batch uploads with per-file progress. Formats the reader cannot open
+  (DJVU, CBR, DOCX, TXT, RTF, LIT) are refused at search and queue time.
+- **Automatic metadata**: embedded metadata (EPUB, PDF, MOBI/AZW3 EXTH headers,
+  FB2 XML, CBZ ComicInfo) → filename parsing → Google Books / Open Library
+  enrichment → optional AI fallback (any OpenAI-compatible endpoint).
 - **Fix metadata & thumbnails in place**: ask the AI ("fix book 11's title with
   the hint …") or use the API — re-runs the whole extraction/enrichment chain on
   an existing book, updates search instantly, and re-fetches the cover
@@ -56,7 +58,7 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   with quoted-phrase support.
 
 **Reading**
-- **In-browser reader** (vendored foliate-js): paginated EPUB/MOBI/AZW3/FB2,
+- **In-browser reader** (vendored foliate-js): paginated EPUB/MOBI/AZW/AZW3/PRC/FB2,
   current position remembered per user, mobile-friendly.
 - **Download** any book for offline reading; CBZ/PDF open natively where supported.
 

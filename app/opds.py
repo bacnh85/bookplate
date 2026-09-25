@@ -3,7 +3,8 @@ from xml.sax.saxutils import escape
 
 MIME = {
     "pdf": "application/pdf", "epub": "application/epub+zip",
-    "mobi": "application/x-mobipocket-ebook", "azw3": "application/x-mobipocket-ebook",
+    "mobi": "application/x-mobipocket-ebook", "azw": "application/x-mobipocket-ebook",
+    "azw3": "application/x-mobipocket-ebook", "prc": "application/x-mobipocket-ebook",
     "fb2": "application/fb2+xml", "cbz": "application/vnd.comicbook+zip",
 }
 COVER_MIME = {

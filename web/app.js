@@ -123,7 +123,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 
 /* ---------- library views (All / format filter / collection) ---------- */
 let shelfFilter = null;  // null = All; "books" | "pdf" | "cbz"
-const EXT_GROUPS = { all: null, books: ["epub", "mobi", "azw3", "fb2"], pdf: ["pdf"], cbz: ["cbz"] };
+const EXT_GROUPS = { all: null, books: ["epub", "mobi", "azw", "azw3", "prc", "fb2"], pdf: ["pdf"], cbz: ["cbz"] };
 const FILTER_NAMES = { all: "All", books: "Books", pdf: "PDFs", cbz: "Comics" };
 
 const adopted = new Set();  // legacy localStorage progress already offered to the server

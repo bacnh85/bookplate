@@ -24,7 +24,7 @@ from urllib.parse import quote_plus, unquote, urljoin, urlsplit
 
 import httpx
 
-from . import settings
+from . import metadata, settings
 from .webfetch import _fetch_bytes
 
 # ponytail: book bytes buffered in RAM like the z-lib CLI path; stream to disk
@@ -53,8 +53,9 @@ SLOW_POLL_S = 30        # keep the worker's job row fresh during long waits
 
 _D3_URL_RE = re.compile(r'href="(https?://[^"]+/d3/[^"]+)"')
 _WAIT_RE = re.compile(r'waitSeconds\s*=\s*(\d+)')
-_GOOD_FILE_EXTS = {"pdf", "epub", "mobi", "azw", "azw3", "fb2", "djvu", "cbz",
-                   "cbr", "txt", "rtf", "lit", "zip", "doc", "docx"}
+# only formats the in-browser reader can open — anything else is refused rather
+# than downloaded and then stranded on the shelf (see app/metadata.py EXTS)
+_GOOD_FILE_EXTS = metadata.EXTS
 
 
 def _guard_hint(base: str) -> str:
@@ -269,7 +270,9 @@ class Annas:
         r = await self._fetch_authed(f"{self._base()}/search?q={quote_plus(q)}")
         if r.status_code != 200:
             raise AnnasUnavailable(f"Anna's Archive search HTTP {r.status_code}")
-        return parse_search_results(r.text, self._base())[:count]
+        rows = [row for row in parse_search_results(r.text, self._base())
+                if not row["extension"] or row["extension"] in _GOOD_FILE_EXTS]
+        return rows[:count]
 
     async def download(self, md5: str, on_progress=None,
                        expected_size: int | None = None) -> tuple[bytes, dict]:

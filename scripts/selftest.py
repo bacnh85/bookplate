@@ -14,6 +14,7 @@ SELFTEST_ADMIN_PASS env — or, when the server shares this filesystem and was
 booted with a generated password, data/initial_admin_password is read.
 """
 import io
+import base64
 import os
 import random
 import re
@@ -22,6 +23,7 @@ import string
 import sys
 import stat
 import time
+import zipfile
 from pathlib import Path
 
 import httpx
@@ -110,6 +112,96 @@ def make_encrypted_pdf(title: str) -> bytes:
     return data.getvalue()
 
 
+# 1x1 JPEG — the smallest valid image the cover magic-byte check accepts
+JPEG_1PX = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////"
+    "////////////////////////////////////////////////////wAALCAABAAEB"
+    "AREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIE"
+    "BAQDBQcDBQAAARECAwQFEQYhEjFBE1FhBxQicYGRMqGx8AjB0eEjQlLxFTOColJi"
+    "/9oADAMBAAIQAxAAAAH/xAAfEAACAgIDAQAAAAAAAAAAAAABAgADBBEFEiEx/9oA"
+    "CAEBAAEFAq7FrOKjTWVsM1WvJ0xRSyZc49j9OFakX//EABQRAQAAAAAAAAAAAAAA"
+    "AAAAAP/aAAgBAwEBPxEf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxEf"
+    "/8QAHhABAAICAwADAAAAAAAAAAAAAQARITFBUWFx/9oACAEBAAY/AnCoAAAA"
+    "AA==")
+
+
+def make_mobi(title: str, author: str, isbn: str = "", subject: str = "",
+              boundary: int | None = None) -> bytes:
+    """Minimal MOBI: record 0 = PalmDOC + MOBI + EXTH, record 1 = raw JPEG cover.
+    EXTH 201 points at the cover record; when `boundary` is set the file claims
+    a KF8 half at that record (a combo AZW3) whose headers carry the real title."""
+    def rec(rtype: int, data: bytes) -> bytes:
+        return rtype.to_bytes(4, "big") + (8 + len(data)).to_bytes(4, "big") + data
+
+    def header(title_: str) -> bytes:
+        # one contiguous buffer: 16-byte PalmDOC header, then the MOBI header —
+        # absolute offsets match web/foliate-js/mobi.js MOBI_HEADER
+        hdr = bytearray(248)
+        hdr[0:2] = (1).to_bytes(2, "big")      # compression 1 = stored (no decompressor)
+        hdr[16:20] = b"MOBI"
+        hdr[20:24] = (232).to_bytes(4, "big")  # MOBI header length
+        hdr[28:32] = (65001).to_bytes(4, "big")  # encoding: utf-8
+        hdr[36:40] = (6).to_bytes(4, "big")      # version 6 → boundary path applies
+        hdr[108:112] = (1).to_bytes(4, "big")    # resourceStart: first resource record
+        hdr[128:132] = (0x40).to_bytes(4, "big")  # EXTH present
+        it = [rec(503, title_.encode()), rec(100, author.encode()),
+              rec(104, isbn.encode()), rec(105, subject.encode()),
+              rec(106, "2011-01-01".encode()), rec(201, (0).to_bytes(4, "big"))]
+        if boundary is not None:
+            it.append(rec(121, boundary.to_bytes(4, "big")))
+        b = len(it).to_bytes(4, "big") + b"".join(it)
+        return bytes(hdr) + b"EXTH" + (12 + len(b)).to_bytes(4, "big") + b
+
+    n = 12
+    records = [b"" for _ in range(n)]
+    records[0] = header(title if boundary is None else f"{title} (MOBI6 half)")
+    records[1] = JPEG_1PX
+    if boundary is not None:
+        records[boundary] = header(title)
+    head = bytearray(78)
+    head[0:8] = b"TestBook"
+    head[60:64] = b"BOOK"
+    head[64:68] = b"MOBI"
+    head[76:78] = n.to_bytes(2, "big")
+    pos, offsets = 78 + n * 8, []
+    for r in records:
+        offsets.append(pos)
+        pos += len(r)
+    index = b"".join(o.to_bytes(4, "big") + b"\x00\x00\x00\x00" for o in offsets)
+    return bytes(head) + index + b"".join(records)
+
+
+def make_fb2(title: str, author: str) -> bytes:
+    cover = base64.b64encode(JPEG_1PX).decode()
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description>
+    <title-info>
+      <genre>sf</genre>
+      <author><first-name>{author}</first-name><last-name>Tester</last-name></author>
+      <book-title>{title}</book-title>
+      <date value="2009-05-05">2009</date>
+      <lang>en</lang>
+      <coverpage><image l:href="#cover.jpg"/></coverpage>
+    </title-info>
+    <publish-info><isbn>978-3-16-148410-0</isbn></publish-info>
+  </description>
+  <body><section><p>Body text.</p></section></body>
+  <binary id="cover.jpg" content-type="image/jpeg">{cover}</binary>
+</FictionBook>""".encode()
+
+
+def make_cbz(title: str, writer: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("ComicInfo.xml",
+                   f"<ComicInfo><Title>{title}</Title><Writer>{writer}</Writer>"
+                   "<Summary>A comic.</Summary><Year>2015</Year><Genre>Action</Genre></ComicInfo>")
+        z.writestr("page002.jpg", JPEG_1PX)  # natural sort must pick page001
+        z.writestr("page001.jpg", JPEG_1PX)
+    return buf.getvalue()
+
+
 def upload(cx, token, name, data):
     return cx.post(f"{BASE}/api/books",
                    files={"file": (name, data)},
@@ -192,6 +284,45 @@ def main():
     check("logical dup detected", any(f"Computer Networks {rand}" in s["title"] for s in r.get("similar", [])),
           str(r.get("similar")))
 
+    # 5b. non-EPUB/PDF formats: embedded metadata + cover extraction
+    r = upload(cx, t_alice, "probe.mobi", make_mobi(f"Mobi Title {rand}", "Mobi Author",
+                                                    "9783161484100", "Fiction"))
+    bm = r["book"]
+    check("mobi embedded metadata", bm["title"] == f"Mobi Title {rand}" and bm["authors"] == "Mobi Author",
+          f'{bm["title"]} / {bm["authors"]}')
+    check("mobi exth isbn/subject/year", bm["isbn"] == "9783161484100"
+          and bm["categories"] == "Fiction" and bm["year"] == 2011,
+          f'{bm["isbn"]} / {bm["categories"]} / {bm["year"]}')
+    r = cx.get(f"{BASE}/api/books/{bm['id']}/cover", headers={"Authorization": f"Bearer {t_alice}"})
+    check("mobi cover from exth 201 record",
+          r.status_code == 200 and r.headers.get("content-type") == "image/jpeg",
+          f"{r.status_code} {r.headers.get('content-type', '')}")
+
+    # combo MOBI6/KF8 (typical AZW3): the KF8 half at EXTH 121 wins
+    r = upload(cx, t_alice, "probe.azw3", make_mobi(f"Combo Title {rand}", "Combo Author", boundary=2))
+    ba = r["book"]
+    check("azw3 combo reads the KF8 half's title", ba["title"] == f"Combo Title {rand}",
+          ba["title"])
+
+    r = upload(cx, t_alice, "probe.fb2", make_fb2(f"FB2 Title {rand}", "Fb"))
+    bf = r["book"]
+    check("fb2 metadata", bf["title"] == f"FB2 Title {rand}" and bf["authors"] == "Fb Tester"
+          and bf["language"] == "en" and bf["year"] == 2009 and bf["isbn"] == "9783161484100",
+          f'{bf["title"]} / {bf["authors"]} / {bf["language"]} / {bf["year"]} / {bf["isbn"]}')
+    check("fb2 base64 cover + genre", bf["cover_ext"] == "jpg" and bf["categories"] == "sf",
+          f'{bf["cover_ext"]} / {bf["categories"]}')
+
+    r = upload(cx, t_alice, "probe.cbz", make_cbz(f"Comic Title {rand}", "Comic Writer"))
+    bc = r["book"]
+    check("cbz comicinfo metadata", bc["title"] == f"Comic Title {rand}"
+          and bc["authors"] == "Comic Writer" and bc["year"] == 2015 and bc["categories"] == "Action",
+          f'{bc["title"]} / {bc["authors"]} / {bc["year"]} / {bc["categories"]}')
+    check("cbz cover is the first sorted page image", bc["cover_ext"] == "jpg", str(bc["cover_ext"]))
+
+    # these probes are ingest-only: drop them so repeat runs don't pile up copies
+    for probe in (bm, ba, bf, bc):
+        cx.delete(f"{BASE}/api/books/{probe['id']}", headers={"Authorization": f"Bearer {t_alice}"})
+
     # 6. FTS search
     res = cx.get(f"{BASE}/api/books", params={"q": "testing"}, headers={"Authorization": f"Bearer {t_alice}"}).json()
     check("FTS search 'testing'", isinstance(res, list) and any("Art of Testing" in x["title"] for x in res),
@@ -262,6 +393,14 @@ def main():
                    headers={"Authorization": f"Bearer {t_alice}"}).json()
     check("queue enqueue", bool(qjob.get("id")) and qjob["status"] in ("queued", "waiting_quota", "downloading", "processing"),
           str(qjob)[:200])
+    # unreadable formats are refused at the door, not queued and stranded
+    for bad_ext in ("djvu", "cbr", "docx"):
+        r = cx.post(f"{BASE}/api/zlib/queue",
+                    json={"id": f"bad-{bad_ext}-{rand}", "name": "Format Probe",
+                          "extension": bad_ext, "size": "1 MB"},
+                    headers={"Authorization": f"Bearer {t_alice}"})
+        check(f"queue rejects .{bad_ext}", r.status_code == 400 and "unsupported" in r.text,
+              f"{r.status_code} {r.text[:120]}")
     jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
     check("queue list", any(j["id"] == qjob["id"] for j in jobs))
     has_backend = cx.get(f"{BASE}/api/zlib/limits", headers={"Authorization": f"Bearer {t_alice}"}).status_code == 200

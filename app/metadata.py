@@ -1,8 +1,12 @@
 """Metadata pipeline: embedded metadata -> filename parse -> Google Books/OpenLibrary -> AI fallback."""
+import base64
 import hashlib
+import html
 import re
 import textwrap
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 from xml.sax.saxutils import escape
 
 import httpx
@@ -11,7 +15,7 @@ from pypdf import PdfReader
 from . import settings
 from .ai import ai_enabled, ai_extract
 
-EXTS = {"pdf", "epub", "mobi", "azw3", "fb2", "cbz"}
+EXTS = {"pdf", "epub", "mobi", "azw", "azw3", "prc", "fb2", "cbz"}
 
 
 def blank() -> dict:
@@ -102,6 +106,203 @@ def from_pdf(path: Path, meta: dict) -> None:
         )[:4000]
     except Exception:
         pass
+
+
+def _u32(b: bytes, off: int) -> int:
+    return int.from_bytes(b[off:off + 4], "big") if len(b) >= off + 4 else 0
+
+
+def _mobi_exth(buf: bytes) -> dict:
+    """EXTH + MOBI header subset, numbering ported from web/foliate-js/mobi.js.
+    Returns {'version','resourceStart','encoding','items'} — items is
+    {type: [bytes, ...]} (repeatable types keep every value)."""
+    if buf[16:20] != b"MOBI":
+        raise ValueError("not a MOBI header")
+    mobi_len, version = _u32(buf, 20), _u32(buf, 36)
+    resource_start, exth_flag = _u32(buf, 108), _u32(buf, 128)
+    items: dict[int, list[bytes]] = {}
+    if exth_flag & 0x40:  # EXTH follows the MOBI header + 16-byte padding
+        p = mobi_len + 16
+        if buf[p:p + 4] != b"EXTH":
+            raise ValueError("missing EXTH header")
+        count, p = _u32(buf, p + 8), p + 12
+        for _ in range(count):
+            if p + 8 > len(buf):
+                break
+            rtype, rlen = _u32(buf, p), _u32(buf, p + 4)
+            if rlen < 8 or p + rlen > len(buf):
+                break
+            items.setdefault(rtype, []).append(buf[p + 8:p + rlen])
+            p += rlen
+    return {"version": version, "resourceStart": resource_start,
+            "encoding": "utf-8" if _u32(buf, 28) == 65001 else "cp1252",
+            "items": items}
+
+
+def _mobi_text(items: dict, rtype: int, encoding: str) -> str:
+    return (items.get(rtype) or [b""])[0].decode(encoding, "ignore").strip()
+
+
+def _mobi_uint(items: dict, rtype: int) -> int | None:
+    """EXTH uint value; None when the record is absent or carries the
+    0xFFFFFFFF 'unset' sentinel. Zero is a real value (coverOffset 0 = the
+    first resource record)."""
+    vals = items.get(rtype)
+    if not vals:
+        return None
+    val = _u32(vals[0], 0)
+    return None if val == 0xFFFFFFFF else val
+
+
+def _image_kind(data: bytes) -> str | None:
+    """Browser-displayable image extension from magic bytes, else None."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+def from_mobi(path: Path, meta: dict) -> None:
+    """MOBI/KF8 (mobi, azw, azw3, prc) metadata + cover from record 0's EXTH.
+    Combo MOBI6/KF8 files (typical AZW3) store their real headers at the record
+    named by EXTH 121 — read that half for metadata and for the coverOffset.
+    The resource BASE, however, stays record 0's `resourceStart` (see below)."""
+    raw = path.read_bytes()
+    if len(raw) < 78:
+        return
+    num_records = int.from_bytes(raw[76:78], "big")
+    offs = [int.from_bytes(raw[78 + i * 8:82 + i * 8], "big") for i in range(num_records)]
+
+    def record(i: int) -> bytes:
+        if not 0 <= i < len(offs):
+            raise IndexError(f"record {i} out of range")
+        end = offs[i + 1] if i + 1 < len(offs) else len(raw)
+        return raw[offs[i]:end]
+
+    hd0 = _mobi_exth(record(0))
+    hd = hd0
+    if hd0["version"] < 8:
+        boundary = _mobi_uint(hd0["items"], 121)
+        if boundary is not None and 0 < boundary < num_records:
+            hd = _mobi_exth(record(boundary))  # KF8 half of a combo file
+    items, enc = hd["items"], hd["encoding"]
+    meta["title"] = _mobi_text(items, 503, enc)
+    meta["authors"] = ", ".join(v.decode(enc, "ignore").strip()
+                                for v in items.get(100, []) if v.strip())
+    meta["description"] = re.sub(r"<[^>]+>", "", _mobi_text(items, 103, enc))
+    meta["isbn"] = _mobi_text(items, 104, enc).replace("-", "")
+    meta["categories"] = ", ".join(v.decode(enc, "ignore").strip()
+                                   for v in items.get(105, []) if v.strip())
+    date = _mobi_text(items, 106, enc)
+    if m := re.search(r"(1[5-9]\d{2}|20\d{2})", date):
+        meta["year"] = int(m.group(1))
+    # cover: EXTH 201 offset, then 202 thumbnail; the record is a raw image
+    # (image records are never PalmDOC-compressed) — magic-check before trusting.
+    # The resource base stays record 0's `resourceStart` even when the KF8 half
+    # supplied the offset — exactly what web/foliate-js/mobi.js does (combo files
+    # lay all images out after both text halves, and rec0 knows the whole layout).
+    # ponytail: HUFF/CDIC-compressed covers and DRM-scrambled ones are skipped —
+    # enrichment/generated-cover fallback already covers that gap.
+    off = next((o for o in (_mobi_uint(items, 201), _mobi_uint(items, 202))
+                if o is not None), None)
+    if off is not None:
+        try:
+            data = record(hd0["resourceStart"] + off)
+        except IndexError:
+            return
+        if ext := _image_kind(data):
+            meta["cover"], meta["cover_ext"] = data, ext
+
+
+def from_fb2(path: Path, meta: dict) -> None:
+    """FB2 (FictionBook XML): <description> fields + base64 <binary> cover."""
+    root = ElementTree.parse(path).getroot()
+    for el in root.iter():  # some files declare an FB2 namespace; make tags plain
+        if isinstance(el.tag, str) and el.tag.startswith("{"):
+            el.tag = el.tag.split("}", 1)[1]
+    ti = root.find("./description/title-info")
+    if ti is None:
+        return
+    meta["title"] = (ti.findtext("book-title") or "").strip()
+    authors = []
+    for a in ti.findall("author"):
+        name = " ".join(x for x in ((a.findtext("first-name") or "").strip(),
+                                    (a.findtext("last-name") or "").strip()) if x)
+        if name:
+            authors.append(name)
+    meta["authors"] = ", ".join(authors)
+    meta["language"] = (ti.findtext("lang") or "").strip()
+    meta["categories"] = ", ".join((g.text or "").strip() for g in ti.findall("genre"))
+    date_el = ti.find("date")
+    date_text = ((date_el.text or "") + " " + (date_el.get("value") or "")) if date_el is not None else ""
+    if m := re.search(r"(1[5-9]\d{2}|20\d{2})", date_text):
+        meta["year"] = int(m.group(1))
+    # publish-info is a SIBLING of title-info, both under description
+    meta["isbn"] = (root.findtext("./description/publish-info/isbn") or "").replace("-", "")
+    # cover: the <binary> referenced by <coverpage>/<image l:href="#id">, else the
+    # first image <binary>; ids are also addressable by the book id
+    cover_id = ""
+    img = ti.find("./coverpage/image")
+    if img is not None:
+        cover_id = (img.get("{http://www.w3.org/1999/xlink}href") or img.get("href") or "").lstrip("#")
+    binaries = root.findall("binary")
+    chosen = next((b for b in binaries if b.get("id") == cover_id), None) if cover_id else None
+    if chosen is None:
+        chosen = next((b for b in binaries
+                       if (b.get("content-type") or "").startswith("image/")), None)
+    if chosen is None:
+        return
+    try:
+        data = base64.b64decode("".join((chosen.text or "").split()))
+    except Exception:
+        return
+    if ext := _image_kind(data):
+        meta["cover"], meta["cover_ext"] = data, ext
+
+
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".jxl", ".avif", ".svg")
+
+
+def from_cbz(path: Path, meta: dict) -> None:
+    """CBZ: ComicInfo.xml metadata when present, first image as cover."""
+    with zipfile.ZipFile(path) as z:
+        info = None
+        ci = next((n for n in z.namelist() if n.lower().endswith("comicinfo.xml")), None)
+        if ci:
+            try:
+                info = ElementTree.fromstring(z.read(ci))
+            except Exception:
+                info = None
+        names = [n for n in z.namelist()
+                 if not n.startswith("__MACOSX/") and n.lower().endswith(_IMAGE_EXTS)]
+        if not names:
+            return
+        names.sort(key=lambda n: [int(t) if t.isdigit() else t.lower()
+                                  for t in re.split(r"(\d+)", n)])
+        try:
+            meta["cover"], meta["cover_ext"] = z.read(names[0]), Path(names[0]).suffix.lstrip(".")
+        except (KeyError, OSError):
+            pass
+    if info is None:
+        return
+    title = (info.findtext("Title") or "").strip()
+    if not title:
+        series, number = (info.findtext("Series") or "").strip(), (info.findtext("Number") or "").strip()
+        title = f"{series} #{number}" if series and number else series
+    if title:
+        meta["title"] = html.unescape(title)
+    meta["authors"] = ", ".join(x.strip() for x in (info.findtext("Writer") or "").split(",") if x.strip())
+    if summary := (info.findtext("Summary") or "").strip():
+        meta["description"] = html.unescape(summary)
+    if year := (info.findtext("Year") or "").strip():
+        meta["year"] = int(year) if year.isdigit() else None
+    if genres := (info.findtext("Genre") or "").strip():
+        meta["categories"] = genres
 
 
 def from_filename(name: str) -> tuple[str, str]:
@@ -258,6 +459,12 @@ async def build_metadata(path: Path, orig_name: str) -> dict:
             from_epub(path, meta)
         elif ext == ".pdf":
             from_pdf(path, meta)
+        elif ext in (".mobi", ".azw", ".azw3", ".prc"):
+            from_mobi(path, meta)
+        elif ext == ".fb2":
+            from_fb2(path, meta)
+        elif ext == ".cbz":
+            from_cbz(path, meta)
     except Exception:
         pass  # corrupt metadata -> fall through to filename/API/AI
     fn_title, fn_author = from_filename(orig_name)

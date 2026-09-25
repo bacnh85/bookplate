@@ -790,17 +790,28 @@ class ZlibQueueReq(BaseModel):
     size: str = ""
 
 
+def _check_queue_ext(ext: str) -> str:
+    """Queue only formats the reader can open. An empty extension is allowed —
+    the real format is only known once the file lands (validated in _run_job)."""
+    ext = (ext or "").lower().strip()
+    if ext and ext not in metadata.EXTS:
+        raise HTTPException(400, f"unsupported format '{ext}', allowed: "
+                                 f"{', '.join(sorted(metadata.EXTS))}")
+    return ext
+
+
 @app.post("/api/zlib/queue")
 def zlib_enqueue(req: ZlibQueueReq, user=UserDep):
     if not req.id:
         raise HTTPException(400, "z-lib book id required")
+    ext = _check_queue_ext(req.extension)
     with db.conn() as con:
         con.execute(
             """INSERT OR IGNORE INTO download_jobs
                (user_id, zlib_id, title, authors, cover_url, ext, size_text)
                VALUES(?,?,?,?,?,?,?)""",
             (user["id"], req.id, req.name, req.authors, req.cover,
-             (req.extension or "").lower(), req.size))
+             ext, req.size))
         row = con.execute("SELECT * FROM download_jobs WHERE user_id=? AND zlib_id=?",
                           (user["id"], req.id)).fetchone()
     return dict(row)
@@ -873,13 +884,14 @@ def annas_enqueue(req: ZlibQueueReq, user=UserDep):
     # id is the book's md5 from the search page — validate before it reaches URLs
     if not re.fullmatch(r"[a-f0-9]{32}", req.id or ""):
         raise HTTPException(400, "anna's archive md5 required")
+    ext = _check_queue_ext(req.extension)
     with db.conn() as con:
         con.execute(
             """INSERT OR IGNORE INTO download_jobs
                (user_id, zlib_id, title, authors, cover_url, ext, size_text, source)
                VALUES(?,?,?,?,?,?,?, 'annas')""",
             (user["id"], req.id, req.name, req.authors, req.cover,
-             (req.extension or "").lower(), req.size))
+             ext, req.size))
         row = con.execute("SELECT * FROM download_jobs WHERE user_id=? AND zlib_id=?",
                           (user["id"], req.id)).fetchone()
     return dict(row)
@@ -1460,7 +1472,13 @@ async def _run_job(job: dict) -> None:
     _job_update(jid, status="processing", bytes_done=None, bytes_total=None)
     ext = Path(meta["_filename"]).suffix.lower().lstrip(".") or job["ext"]
     if ext not in metadata.EXTS:
-        ext = "pdf"
+        # never store a file under a lying extension (a .djvu as .pdf used to be
+        # unreadable AND mislabeled) — fail the job with a readable reason
+        _job_update(jid, status="failed",
+                    error=f"downloaded file format '{ext or 'unknown'}' is not supported "
+                          f"(allowed: {', '.join(sorted(metadata.EXTS))})",
+                    next_attempt_at=None)
+        return
     fd, name = tempfile.mkstemp(dir=TMP_DIR, suffix=f".{ext}")
     os.close(fd)  # mkstemp leaks an fd if the int is discarded
     tmp = Path(name)

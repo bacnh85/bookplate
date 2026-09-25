@@ -59,7 +59,7 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
     <tbody>
       <tr><td><code>GET</code></td><td><code>/api/books?q=</code></td><td>your shelf (own + shared), full-text search across title/author/categories/ISBN; quoted phrases allowed</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/books/{id}</code></td><td>full metadata + your reading progress</td></tr>
-      <tr><td><code>POST</code></td><td><code>/api/books</code></td><td>upload — multipart <code>file=@book.epub</code>; PDF, EPUB, MOBI, AZW3, FB2, CBZ; auto-metadata + dedup</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/books</code></td><td>upload — multipart <code>file=@book.epub</code>; PDF, EPUB, MOBI, AZW, AZW3, PRC, FB2, CBZ; auto-metadata + dedup</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/books/{id}/file</code></td><td>the book file (add <code>?dl=1</code> for a download attachment); supports HTTP Range; add <code>?reader=1</code> to prefer the linearized PDF derivative (the in-app reader does — originals are never modified)</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/books/{id}/cover</code></td><td>cover image</td></tr>
       <tr><td><code>PATCH</code></td><td><code>/api/books/{id}</code></td><td>edit metadata fields (title, authors, year, …) — uploader or admin</td></tr>
@@ -414,10 +414,13 @@ docker compose up -d
   e.g. two scans — is flagged after upload so you can compare and remove one.</p>
 
   <h4>Which formats can I upload?</h4>
-  <p>PDF, EPUB, MOBI, AZW3, FB2 and CBZ. Everything gets automatic metadata, a guaranteed
-  cover (embedded art → PDF page-1 → enrichment → generated placeholder), and full-text
-  search. EPUB/MOBI/AZW3/FB2 read in the in-browser reader with synced progress; PDF and
-  CBZ stream page-by-page. PDFs additionally get a linearized copy generated for the
+  <p>PDF, EPUB, MOBI, AZW, AZW3, PRC, FB2 and CBZ. Everything gets automatic metadata —
+  read from the file itself where it exists (EPUB, PDF, MOBI/AZW3 EXTH, FB2 XML,
+  CBZ ComicInfo) — a guaranteed cover (embedded art → PDF page-1 → enrichment → generated
+  placeholder), and full-text search. EPUB/MOBI/AZW/AZW3/PRC/FB2 read in the in-browser
+  reader with synced progress; PDF and CBZ stream page-by-page. Formats the reader cannot
+  open (DJVU, CBR, DOCX, TXT, RTF, LIT) are refused at search and queue time rather than
+  stored unreadable. PDFs additionally get a linearized copy generated for the
   in-app reader (<code>?reader=1</code>), so first pages appear faster — the original file
   is never modified and downloads/Kindle sends always use it.</p>
 

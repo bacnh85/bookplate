@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 from .db import DATA_DIR
-from . import settings
+from . import metadata, settings
 
 # Active account context (set by main.py's worker/endpoints while POOL_LOCK is
 # held). Empty = legacy mode: the plain host ~/.config/zlib session and the
@@ -217,7 +217,7 @@ class Zlib:
                 raise ValueError("unexpected JSON shape")
         except (json.JSONDecodeError, ValueError) as e:
             raise ZlibUnavailable(f"Z-Library search returned junk: {e}") from e
-        return [{
+        rows = [{
             "id": str(b.get("id", "")), "name": b.get("name", ""),
             "authors": ", ".join(b.get("authors") or []),
             "year": str(b.get("year") or ""),
@@ -228,6 +228,9 @@ class Zlib:
             "quality": str(b.get("quality", "")), "url": b.get("url", ""),
             "description": _clean_desc(b.get("description", "")),
         } for b in books[:count]]
+        # only formats the reader can open — an unusable extension is hidden
+        # rather than queued and stranded (empty = store didn't say: keep it)
+        return [r for r in rows if not r["extension"] or r["extension"] in metadata.EXTS]
 
     async def limits(self) -> dict:
         await self._ensure_session()
