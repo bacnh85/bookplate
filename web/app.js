@@ -664,9 +664,13 @@ async function showQuota() {
   try {
     const l = await api("/api/zlib/limits");
     if (findSource !== src) return;
-    if (el) el.textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads left`;
+    if (el) el.textContent = quotaText(l);
   } catch { if (el) el.textContent = ""; /* unconfigured — surfaced on search */ }
 }
+
+const quotaText = (l) => (l.total_allowed != null
+  ? `Daily quota: ${l.total_remaining ?? "?"} of ${l.total_allowed ?? "?"} downloads left across ${l.accounts.length} account${l.accounts.length === 1 ? "" : "s"}`
+  : `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads left`);
 
 let zlibTimer;
 let zlibSearchSeq = 0;  // discard stale responses from overlapping searches
@@ -925,7 +929,7 @@ $("#downloads-btn").onclick = () => {
   $("#downloads-dialog").showModal();
   refreshQueue();
   api("/api/zlib/limits").then((l) => {
-    $("#downloads-quota").textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads remaining`;
+    $("#downloads-quota").textContent = quotaText(l);
   }).catch(() => { $("#downloads-quota").textContent = ""; });
 };
 $("#downloads-close").onclick = () => $("#downloads-dialog").close();
@@ -1297,6 +1301,7 @@ function setAdminTab(tab) {
   if (tab === "api") loadTokens();
 }
 const adminFail = (e) => { $("#admin-error").textContent = e.message; };
+const adminError = (msg) => { $("#admin-error").textContent = msg || ""; };
 
 /* ---------- docs ---------- */
 let docsTab = "api", docsLoaded = false;
@@ -1411,7 +1416,7 @@ $("#admin-user-form").onsubmit = async (e) => {
 };
 
 /* ----- settings tab ----- */
-const SECRET_FIELDS = { "zlib.password": "#set-zlib-password", "annas.secret_key": "#set-annas-key", "ai.api_key": "#set-ai-key", "kindle.smtp_password": "#set-kindle-password" };
+const SECRET_FIELDS = { "annas.secret_key": "#set-annas-key", "ai.api_key": "#set-ai-key", "kindle.smtp_password": "#set-kindle-password" };
 const clearFlags = new Set();
 document.querySelectorAll("[data-clear]").forEach((b) => {
   b.onclick = () => { clearFlags.add(b.dataset.clear); $(SECRET_FIELDS[b.dataset.clear]).value = ""; b.textContent = "cleared on save"; };
@@ -1428,8 +1433,6 @@ async function loadAdminSettings() {
   }
   settingsLoaded = true;
   $("#settings-save").disabled = false;
-  $("#set-zlib-email").value = s["zlib.email"] || "";
-  $("#set-zlib-domain").value = s["zlib.domain"] || "";
   $("#set-annas-base").value = s["annas.base_url"] || "";
   $("#set-ai-base").value = s["ai.base_url"] || "";
   $("#set-ai-model").value = s["ai.model"] || "";
@@ -1442,8 +1445,8 @@ async function loadAdminSettings() {
   $("#set-ai-enabled").checked = s["ai.enabled"] !== "0";
   for (const [key, sel] of Object.entries(SECRET_FIELDS)) {
     const v = s[key];
-    $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("zlib") ? "password"
-      : sel.includes("annas") ? "secret key" : sel.includes("kindle") ? "SMTP password" : "API key";
+    $(sel).placeholder = v?.set ? `saved (…${v.hint.slice(-4)}) — type to replace` : sel.includes("annas") ? "secret key"
+      : sel.includes("kindle") ? "SMTP password" : "API key";
     $(sel).value = "";
   }
   clearFlags.clear();
@@ -1454,8 +1457,6 @@ $("#admin-settings-form").onsubmit = async (e) => {
   e.preventDefault();
   if (!settingsLoaded) return adminFail(new Error("settings not loaded — nothing to save"));
   const values = {
-    "zlib.email": $("#set-zlib-email").value.trim(),
-    "zlib.domain": $("#set-zlib-domain").value.trim(),
     "annas.base_url": $("#set-annas-base").value.trim(),
     "ai.base_url": $("#set-ai-base").value.trim(),
     "ai.model": $("#set-ai-model").value.trim(),
@@ -1479,12 +1480,77 @@ $("#admin-settings-form").onsubmit = async (e) => {
 
 /* ----- z-library tab ----- */
 async function loadAdminZlib() {
+  loadZlibAccounts();
+  loadZlibUsage();
   api("/api/admin/zlib/limits").then((l) => {
-    $("#zlib-admin-quota").textContent = `Daily quota: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} downloads remaining`;
+    $("#zlib-admin-quota").textContent = quotaText(l);
   }).catch((e) => { $("#zlib-admin-quota").textContent = e.message; });
   await loadZlibHistory();
   loadZlibLibrary();
   loadZlibBooklists();
+}
+
+async function loadZlibAccounts() {
+  const box = $("#zlib-accounts");
+  box.innerHTML = "";
+  let accs;
+  try { accs = await api("/api/admin/zlib/accounts"); } catch (e) { box.textContent = e.message; return; }
+  if (!accs.length) { box.textContent = "No accounts yet — add one below."; return; }
+  for (const a of accs) {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    const quota = a.daily_remaining == null ? "quota unknown (Verify to probe)"
+      : `${a.daily_remaining}/${a.daily_allowed ?? "?"} left${a.reset_at ? ` · resets ${a.reset_at}` : ""}`;
+    row.innerHTML = `
+      <div class="au-email">${esc(a.label || a.email_masked)}${a.label ? ` <span class="result-sub">(${esc(a.email_masked)})</span>` : ""}</div>
+      <span class="badge">${a.enabled ? "active" : "paused"}</span>
+      <span class="result-sub">${esc(quota)}${a.last_error ? ` · ⚠ ${esc(a.last_error.slice(0, 80))}` : ""}</span>
+      <span class="au-actions"></span>`;
+    const actions = row.querySelector(".au-actions");
+    const btn = (label, fn, cls = "btn-ghost") => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls; b.textContent = label;
+      b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { adminFail(e); } loadZlibAccounts(); };
+      actions.appendChild(b);
+    };
+    btn("Verify", () => api(`/api/admin/zlib/accounts/${a.id}/verify`, { method: "POST" }));
+    btn(a.enabled ? "Pause" : "Resume", () =>
+      api(`/api/admin/zlib/accounts/${a.id}`, { method: "PATCH", json: { enabled: !a.enabled } }));
+    btn("Delete", async () => {
+      if (!confirm(`Remove ${a.label || a.email_masked} from the pool?`)) return;
+      await api(`/api/admin/zlib/accounts/${a.id}`, { method: "DELETE" });
+    });
+    box.appendChild(row);
+  }
+}
+
+$("#zlib-account-form").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    await api("/api/admin/zlib/accounts", { method: "POST", json: {
+      label: $("#za-label").value.trim(), email: $("#za-email").value.trim(),
+      password: $("#za-pass").value, domain: $("#za-domain").value.trim() } });
+    $("#za-pass").value = "";
+    adminError("");
+    loadZlibAccounts(); loadZlibUsage();
+  } catch (err) { adminFail(err); }
+};
+
+async function loadZlibUsage() {
+  const box = $("#zlib-usage");
+  box.innerHTML = "";
+  let rows;
+  try { rows = await api("/api/admin/zlib/usage?limit=30"); } catch (e) { box.textContent = e.message; return; }
+  if (!rows.length) { box.textContent = "No usage recorded yet."; return; }
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    const cap = r.daily_remaining != null ? ` (${r.daily_remaining}/${r.daily_allowed ?? "?"} left)` : "";
+    row.innerHTML = `<span class="result-sub">${esc(r.ts)}</span>
+      <span class="badge">${esc(r.event)}</span>
+      <span class="result-sub">${esc(r.account || "pool")}${esc(cap)}${r.detail ? " — " + esc(r.detail) : ""}</span>`;
+    box.appendChild(row);
+  }
 }
 $("#zh-prev").onclick = () => { if (zhPage > 1) { zhPage--; loadZlibHistory(); } };
 $("#zh-next").onclick = () => { if (zhPage < zhTotal) { zhPage++; loadZlibHistory(); } };

@@ -145,10 +145,14 @@ class CollectionTests(unittest.TestCase):
         src = main.me(u)["sources"]
         self.assertEqual(src["zlib"], False)
         self.assertEqual(src["annas"], False)
+        # pool: a configured enabled account (seeded from the legacy settings keys)
         settings.set("zlib.email", "a@b.c")
         settings.set("zlib.password", "pw")
+        with db.conn() as con:
+            main.db._seed_zlib_accounts(con)
         self.assertEqual(main.me(u)["sources"]["zlib"], True)
-        settings.set("zlib.password", "")  # cleared — not configured
+        with db.conn() as con:  # disabled account = not configured
+            con.execute("UPDATE zlib_accounts SET enabled=0")
         self.assertEqual(main.me(u)["sources"]["zlib"], False)
         settings.set("annas.secret_key", "k")
         self.assertEqual(main.me(u)["sources"]["annas"], True)

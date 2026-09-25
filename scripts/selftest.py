@@ -299,7 +299,10 @@ def main():
         jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
         by_id = {j["id"]: j for j in jobs}
         got = [by_id.get(j) for j in pair_ids]
-        if all(j and j["error"] and (j["status"] == "failed" or j["attempts"] >= 1) for j in got):
+        # waiting_quota is a valid drain outcome too: on a host where the zlib
+        # pool IS configured and today's quota is spent, jobs park until reset
+        if all(j and j["error"] and (j["status"] == "failed" or j["attempts"] >= 1
+                                     or j["status"] == "waiting_quota") for j in got):
             drained = True
             break
         time.sleep(1)

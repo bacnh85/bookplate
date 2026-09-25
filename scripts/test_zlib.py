@@ -410,7 +410,7 @@ class ZlibEapiTests(unittest.TestCase):
         (cfg / "session.json").write_text(json.dumps(
             {"cookies": {"remix_userid": "1", "remix_userkey": "k"},
              "domain": "https://z-lib.test", "mode": "eapi"}))
-        home = mock.patch("app.zlib_eapi.SESSION_FILE", cfg / "session.json")
+        home = mock.patch("app.zlib_eapi._session_file", lambda account_id=None: cfg / "session.json")
         home.start()
         self.addCleanup(home.stop)
         from app import zlib_eapi
@@ -519,7 +519,7 @@ class ZlibEapiTests(unittest.TestCase):
         import httpx
         # session.json absent (fresh container): the module must attempt a CLI
         # login and then succeed — NOT permanently cache "unavailable"
-        missing = self.zlib_eapi.SESSION_FILE.parent / "missing.json"
+        missing = self.zlib_eapi._session_file().parent / "missing.json"
         missing.unlink(missing_ok=True)
         session = json.dumps({"cookies": {"remix_userid": "1", "remix_userkey": "k"},
                               "domain": "https://z-lib.test", "mode": "eapi"})
@@ -536,7 +536,7 @@ class ZlibEapiTests(unittest.TestCase):
         def client_factory(*a, **k):
             return real_client(transport=self._transport(handler))
 
-        with mock.patch("app.zlib_eapi.SESSION_FILE", missing):
+        with mock.patch("app.zlib_eapi._session_file", lambda account_id=None: missing):
             with mock.patch.object(self.zlib_eapi.zlib, "_ensure_session", fake_ensure):
                 with mock.patch("app.zlib_eapi.httpx.AsyncClient", side_effect=client_factory):
                     lib = run(self.zlib_eapi.library())
@@ -548,13 +548,13 @@ class ZlibEapiTests(unittest.TestCase):
         self.assertTrue(lib2["available"])
 
     def test_missing_session_without_creds_not_cached(self):
-        missing = self.zlib_eapi.SESSION_FILE.parent / "absent.json"
+        missing = self.zlib_eapi._session_file().parent / "absent.json"
         missing.unlink(missing_ok=True)
 
         async def refuse():  # no creds configured -> CLI login refuses
             raise ZlibUnavailable("Z-Library login needs creds")
 
-        with mock.patch("app.zlib_eapi.SESSION_FILE", missing):
+        with mock.patch("app.zlib_eapi._session_file", lambda account_id=None: missing):
             with mock.patch.object(self.zlib_eapi.zlib, "_ensure_session", refuse):
                 lib = run(self.zlib_eapi.library())
         self.assertEqual(lib, {"available": False})

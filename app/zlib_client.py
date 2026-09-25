@@ -7,7 +7,9 @@ The CLI solves both automatically and exposes --json for search/profile.
 One-time setup on the host:
   brew install heartleo/tap/zlib
   zlib login --eapi --email you@x --password ... --domain https://z-lib.gd
-Session persists in ~/.config/zlib. If a call fails because the session is missing
+Session persists in ~/.config/zlib (host default) or per-account in
+`data/zlib_accounts/<id>/` when the account pool is used. If a call fails
+because the session is missing
 or expired and zlib.email/zlib.password are configured (Admin → Settings), this
 adapter re-logins
 and retries once. NOTE: the CLI has no stdin/env password input, so the password
@@ -24,6 +26,18 @@ from pathlib import Path
 
 from .db import DATA_DIR
 from . import settings
+
+# Active account context (set by main.py's worker/endpoints while POOL_LOCK is
+# held). Empty = legacy mode: the plain host ~/.config/zlib session and the
+# zlib.* settings keys — search/limits still work that way when no pool exists.
+_active: dict | None = None
+
+
+def _cfg_dir() -> Path:
+    """The CLI session dir for the active account (or the host default)."""
+    if _active:
+        return Path(_active["dir"]) / ".config" / "zlib"
+    return Path.home() / ".config" / "zlib"
 
 
 class ZlibUnavailable(Exception):
@@ -56,9 +70,23 @@ def parse_size(s: str) -> int | None:
 
 class Zlib:
     async def _spawn(self, *args: str):
-        """Process seam (unit tests patch this): one zlib CLI invocation."""
+        """Process seam (unit tests patch this): one zlib CLI invocation.
+        With an active account, the child runs in that account's env: HOME +
+        XDG_CONFIG_HOME sandbox its session dir (the CLI hardcodes
+        ~/.config/zlib relative to the config dir — no config-dir flag), and
+        ZLIB_DOMAIN pins the mirror from DB truth (host env/workdir .env would
+        otherwise override everything, per the CLI's domain-resolution order)."""
+        env = None
+        if _active:
+            d = Path(_active["dir"])
+            env = {**os.environ,
+                   "HOME": str(d), "XDG_CONFIG_HOME": str(d / ".config"),
+                   "ZLIB_DOMAIN": _active.get("domain") or ""}
+            if not env["ZLIB_DOMAIN"]:
+                del env["ZLIB_DOMAIN"]
         return await asyncio.create_subprocess_exec(
-            "zlib", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            "zlib", *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=env)
 
     async def _run(self, *args: str, timeout: float = 90) -> tuple[int, str, str]:
         proc = await self._spawn(*args)
@@ -83,8 +111,16 @@ class Zlib:
         return shutil.which("zlib") is not None
 
     def _creds(self) -> tuple[str, str] | None:
+        if _active:
+            c = _active["creds"]
+            return (c[0], c[1]) if c[0] and c[1] else None
         email, password = settings.get("zlib.email"), settings.get("zlib.password")
         return (email, password) if email and password else None
+
+    def _domain(self) -> str:
+        if _active:
+            return _active.get("domain") or "https://z-lib.gd"
+        return settings.get("zlib.domain", "https://z-lib.gd")
 
     async def _healthy_domain(self, exclude: str) -> str | None:
         """First 'healthy' EAPI domain from `zlib doctor --eapi --json`, skipping
@@ -109,7 +145,7 @@ class Zlib:
         creds = self._creds()
         if not creds:
             raise ZlibConfigError("Z-Library account not configured — set it in Admin → Settings")
-        domain = settings.get("zlib.domain", "https://z-lib.gd")
+        domain = self._domain()
         rc, out, err = await self._run(
             "login", "--eapi", "--email", creds[0], "--password", creds[1],
             "--domain", domain, timeout=120)
@@ -120,7 +156,12 @@ class Zlib:
                     "login", "--eapi", "--email", creds[0], "--password", creds[1],
                     "--domain", alt, timeout=120)
                 if rc == 0:
-                    settings.set("zlib.domain", alt)
+                    if _active:
+                        from . import zlib_accounts
+                        zlib_accounts.update(_active["id"], domain=alt)
+                        _active["domain"] = alt
+                    else:
+                        settings.set("zlib.domain", alt)
                     return
             raise ZlibUnavailable(
                 f"Z-Library login failed: {(err or out).strip()[:200]}"
@@ -133,14 +174,14 @@ class Zlib:
         domain inside session.json — a Settings change alone would be ignored).
         Session expiry is handled by the re-login+retry in _run_authed."""
         self._require_cli()
-        cfg = Path.home() / ".config" / "zlib"
+        cfg = _cfg_dir()
         if cfg.is_dir() and any(cfg.iterdir()):
             if self._creds():
                 try:
                     sess = json.loads((cfg / "session.json").read_text())
                 except (OSError, ValueError):
                     sess = {}
-                want = settings.get("zlib.domain", "https://z-lib.gd").rstrip("/")
+                want = self._domain().rstrip("/")
                 have = str(sess.get("domain", "")).rstrip("/")
                 if have and want and have != want:
                     await self._login()
@@ -271,6 +312,18 @@ class Zlib:
             return f.read_bytes(), {"_filename": f.name}
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+
+
+async def with_account(account: dict, coro_fn, *args, **kwargs):
+    """Run coro_fn(*args, **kwargs) with `account` as the active account ctx.
+    account: {id, dir, domain, creds:(email,password)}."""
+    global _active
+    prev = _active
+    _active = account
+    try:
+        return await coro_fn(*args, **kwargs)
+    finally:
+        _active = prev
 
 
 zlib = Zlib()

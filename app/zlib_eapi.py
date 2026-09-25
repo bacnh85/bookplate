@@ -31,8 +31,6 @@ import httpx
 
 from .zlib_client import ZlibUnavailable, zlib
 
-SESSION_FILE = Path.home() / ".config" / "zlib" / "session.json"
-
 # endpoint candidates probed in order — first success=1 envelope wins
 LIBRARY_CANDIDATES = [
     "/eapi/user/book/bookmarks",
@@ -51,9 +49,18 @@ BOOKLIST_CANDIDATES = [
 _winners: dict[str, str | None] = {}
 
 
-def _session() -> dict | None:
+def _session_file(account_id: int | None = None) -> Path:
+    """Account pool: each account's CLI session lives in its own dir.
+    None = legacy host session (~/.config/zlib)."""
+    if account_id is not None:
+        from .zlib_accounts import account_dir
+        return account_dir(account_id) / ".config" / "zlib" / "session.json"
+    return Path.home() / ".config" / "zlib" / "session.json"
+
+
+def _session(account_id: int | None = None) -> dict | None:
     try:
-        return json.loads(SESSION_FILE.read_text())
+        return json.loads(_session_file(account_id).read_text())
     except (OSError, ValueError):
         return None
 
@@ -82,10 +89,12 @@ def _normalize_book(b: dict) -> dict:
     }
 
 
-async def _call(endpoint: str, page: int) -> dict:
-    """GET a known endpoint; on an auth error, re-login once and retry."""
+async def _call(endpoint: str, page: int, account_id: int | None = None) -> dict:
+    """GET a known endpoint; on an auth error, re-login once and retry.
+    The re-login and the retry run under the same account ctx."""
+    from .zlib_client import with_account
     for attempt in (1, 2):
-        s = _session()
+        s = _session(account_id)
         if not s or not s.get("domain"):
             return {"available": False}
         try:
@@ -108,25 +117,47 @@ async def _call(endpoint: str, page: int) -> dict:
             return {"available": False}  # endpoint answered but rejected the call
         if attempt == 1:
             try:
-                await zlib._login()  # fresh session, then re-read session.json
+                if account_id is not None:
+                    from . import zlib_accounts
+                    acc = zlib_accounts.get(account_id)
+                    if not acc:
+                        return {"available": False}
+                    ctx = {"id": account_id, "dir": str(zlib_accounts.account_dir(account_id)),
+                           "domain": acc["domain"], "creds": (acc["email"], acc["password"])}
+                    await with_account(ctx, zlib._login)
+                else:
+                    await zlib._login()  # fresh session, then re-read session.json
             except ZlibUnavailable:
                 return {"available": False}
     return {"available": False}
 
 
-async def _fetch(kind: str, candidates: list[str], page: int = 1) -> dict:
+async def _fetch(kind: str, candidates: list[str], page: int = 1,
+                 account_id: int | None = None) -> dict:
     """Probe candidates for one feature; winner cached per process.
     Returns {"available": True, "items": [...], "pagination": {...}} or
     {"available": False}. A missing session triggers one CLI login (when creds
     exist) before giving up; a missing-session outcome is NOT cached (the next
     call retries after a login), only a probed-negative endpoint list is."""
     if kind in _winners:
-        return await _call(_winners[kind], page) if _winners[kind] else {"available": False}
-    s = _session()
+        if _winners[kind]:
+            return await _call(_winners[kind], page, account_id)
+        return {"available": False}
+    s = _session(account_id)
     if not s or not s.get("domain") or not s.get("cookies"):
         try:
-            await zlib._ensure_session()  # creds from settings/env -> fresh session.json
-            s = _session()
+            if account_id is not None:
+                from . import zlib_accounts
+                from .zlib_client import with_account
+                acc = zlib_accounts.get(account_id)
+                if not acc:
+                    return {"available": False}
+                ctx = {"id": account_id, "dir": str(zlib_accounts.account_dir(account_id)),
+                       "domain": acc["domain"], "creds": (acc["email"], acc["password"])}
+                await with_account(ctx, zlib._ensure_session)
+            else:
+                await zlib._ensure_session()  # creds from settings/env -> fresh session.json
+            s = _session(account_id)
         except ZlibUnavailable:
             return {"available": False}  # no CLI/creds: report unavailable, don't cache
         if not s or not s.get("domain") or not s.get("cookies"):
@@ -152,10 +183,20 @@ async def _fetch(kind: str, candidates: list[str], page: int = 1) -> dict:
             raise ZlibUnavailable(f"Z-Library unreachable: {e}") from e
         if winner:
             _winners[kind] = winner
-            return await _call(winner, page)
+            return await _call(winner, page, account_id)
         if auth_err and attempt == 1:
             try:
-                await zlib._login()
+                if account_id is not None:
+                    from . import zlib_accounts
+                    from .zlib_client import with_account
+                    acc = zlib_accounts.get(account_id)
+                    if not acc:
+                        break
+                    ctx = {"id": account_id, "dir": str(zlib_accounts.account_dir(account_id)),
+                           "domain": acc["domain"], "creds": (acc["email"], acc["password"])}
+                    await with_account(ctx, zlib._login)
+                else:
+                    await zlib._login()
                 continue
             except ZlibUnavailable:
                 break
@@ -164,9 +205,9 @@ async def _fetch(kind: str, candidates: list[str], page: int = 1) -> dict:
     return {"available": False}
 
 
-async def library(page: int = 1) -> dict:
-    return await _fetch("library", LIBRARY_CANDIDATES, page)
+async def library(page: int = 1, account_id: int | None = None) -> dict:
+    return await _fetch("library", LIBRARY_CANDIDATES, page, account_id)
 
 
-async def booklists() -> dict:
-    return await _fetch("booklists", BOOKLIST_CANDIDATES)
+async def booklists(account_id: int | None = None) -> dict:
+    return await _fetch("booklists", BOOKLIST_CANDIDATES, 1, account_id)

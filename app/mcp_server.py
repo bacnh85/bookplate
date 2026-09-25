@@ -120,8 +120,8 @@ async def search_store(query: str, source: str = "") -> list[dict]:
     """Search a download store (Z-Library or Anna's Archive) for books to queue.
     source: 'zlibrary', 'annas', or '' for whichever is configured."""
     from . import settings
-    src = source or ("zlibrary" if settings.get("zlib.email") and settings.get("zlib.password")
-                     else "annas")
+    from .zlib_accounts import configured
+    src = source or ("zlibrary" if configured() else "annas")
     zlib, annas = _lazy("zlib"), _lazy("annas")
     if src == "zlibrary":
         return await zlib.search(query, count=8)

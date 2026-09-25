@@ -22,7 +22,8 @@ from .auth import make_api_token
 from .kindle import KindleError, smtp_ready, send as kindle_send
 from .storage import book_path, cover_path, ensure_linearized, linearized_path, sha256_file, store_file
 from .webfetch import _fetch_bytes, _resolve_public_ip
-from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib
+from .zlib_client import ZlibConfigError, ZlibUnavailable, parse_size, zlib, with_account
+from . import zlib_accounts
 from . import zlib_eapi
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -120,7 +121,7 @@ def me(user=UserDep):
     return {"id": user["id"], "username": user["username"],
             "role": user["role"], "status": user["status"],
             "kindle": bool(smtp_ready() and devices), "devices": devices,
-            "sources": {"zlib": bool(settings.get("zlib.email") and settings.get("zlib.password")),
+            "sources": {"zlib": zlib_accounts.configured(),
                         "annas": bool(settings.get("annas.secret_key")),
                         "zlib_domain": settings.get("zlib.domain"),
                         "annas_base": settings.get("annas.base_url"),
@@ -754,10 +755,30 @@ async def zlib_search(q: str, user=UserDep):
 
 @app.get("/api/zlib/limits")
 async def zlib_limits(user=UserDep):
-    try:
-        return await zlib.limits()
-    except ZlibUnavailable as e:
-        raise HTTPException(503, str(e))
+    """Aggregate pool view: users see remaining/allowed across all enabled
+    accounts, not credentials. Cached quota only — no CLI spawns per view."""
+    total_remaining = total_allowed = 0
+    accounts = []
+    for a in zlib_accounts.enabled_accounts():
+        q = zlib_accounts.cached_quota(a["id"], ttl=None)  # cache-only, cheap
+        remaining = q["remaining"] if q else None
+        allowed = q["allowed"] if q else None
+        accounts.append({"id": a["id"], "label": a["label"],
+                         "email": zlib_accounts._mask_email(a["email"]),
+                         "daily_remaining": remaining, "daily_allowed": allowed,
+                         "reset_at": q["reset_at"] if q else "",
+                         "error": a["last_error"]})
+        if isinstance(remaining, int):
+            total_remaining += remaining
+        if isinstance(allowed, int):
+            total_allowed += allowed
+    if not accounts:  # no pool — fall back to a live legacy probe
+        try:
+            return await zlib.limits()
+        except ZlibUnavailable as e:
+            raise HTTPException(503, str(e))
+    return {"total_remaining": total_remaining, "total_allowed": total_allowed,
+            "accounts": accounts}
 
 
 class ZlibQueueReq(BaseModel):
@@ -947,9 +968,9 @@ async def ai_chat_endpoint(req: ChatReq, user=UserDep):
         raise HTTPException(429, "too many AI requests — wait a minute")
 
     async def search_store(query: str, source: str | None = None) -> list[dict]:
-        # configured-ness, not CLI presence: zlib.enabled only checks the binary
-        src = source or ("zlibrary" if settings.get("zlib.email") and settings.get("zlib.password")
-                         else "annas")
+        # configured-ness = the account pool has an enabled account (not CLI presence)
+        from .zlib_accounts import configured
+        src = source or ("zlibrary" if configured() else "annas")
         if src == "zlibrary":
             return await zlib.search(query, count=8)
         return await annas.search(query, count=8)
@@ -1095,7 +1116,7 @@ def admin_reset_password(uid: int, req: PasswordReq, admin=AdminDep):
     return {"ok": True}
 
 
-# ---------- admin: app-managed settings ----------
+# ---------- admin: z-library account management ----------
 
 SECRET_SETTINGS = {"zlib.password", "annas.secret_key", "ai.api_key", "kindle.smtp_password"}
 
@@ -1135,34 +1156,168 @@ def admin_put_settings(req: SettingsReq, admin=AdminDep):
 
 # ---------- admin: z-library account management ----------
 
-@app.get("/api/admin/zlib/limits")
-async def admin_zlib_limits(admin=AdminDep):
-    try:
+def _account_ctx(a) -> dict:
+    """Runtime ctx handed to with_account(): CLI env sandbox + credentials."""
+    return {"id": a["id"], "dir": str(zlib_accounts.account_dir(a["id"])),
+            "domain": a["domain"], "creds": (a["email"], a["password"])}
+
+
+def _first_account() -> sqlite3.Row | None:
+    accs = zlib_accounts.enabled_accounts()
+    return accs[0] if accs else None
+
+
+async def _account_limits(a: dict | None = None) -> dict:
+    """Profile for one account (pool ctx) or the legacy host session.
+    Snapshot each pool account's result into the quota cache + ledger."""
+    if a is None:
         return await zlib.limits()
+    async with zlib_accounts.POOL_LOCK:
+        limits = await with_account(a, zlib.limits)
+    zlib_accounts.snapshot(a["id"], limits)
+    return limits
+
+
+async def _account_history(page: int, fmt: str, a: dict | None) -> dict:
+    if a is None:
+        return await zlib.history(page=page, fmt=fmt)
+    async with zlib_accounts.POOL_LOCK:
+        return await with_account(a, zlib.history, page, fmt)
+
+
+@app.get("/api/admin/zlib/accounts")
+def admin_zlib_accounts(admin=AdminDep):
+    out = []
+    for a in zlib_accounts.accounts():
+        d = dict(a)
+        d.pop("password", None)  # never leaves the server
+        d["email_masked"] = zlib_accounts._mask_email(a["email"])
+        q = zlib_accounts.cached_quota(a["id"], ttl=None)
+        d["daily_remaining"] = q["remaining"] if q else None
+        d["daily_allowed"] = q["allowed"] if q else None
+        d["reset_at"] = q["reset_at"] if q else ""
+        out.append(d)
+    return out
+
+
+class ZlibAccountReq(BaseModel):
+    label: str = ""
+    email: str
+    password: str
+    domain: str = ""
+
+
+class ZlibAccountPatch(BaseModel):
+    label: str | None = None
+    email: str | None = None
+    password: str | None = None  # empty string clears; None = untouched
+    domain: str | None = None
+    enabled: bool | None = None
+
+
+@app.post("/api/admin/zlib/accounts")
+async def admin_zlib_account_add(req: ZlibAccountReq, admin=AdminDep):
+    email = req.email.strip().lower()
+    if not email or not req.password:
+        raise HTTPException(400, "email and password required")
+    try:
+        a = zlib_accounts.create(req.label.strip(), email, req.password,
+                                 req.domain.strip())
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    # one-time login right away: a bad password/domain is reported at creation,
+    # not by the download worker at 3am
+    if zlib.enabled:
+        try:
+            await _account_limits(_account_ctx(a))
+        except ZlibUnavailable as e:
+            zlib_accounts.note_failure(a["id"], str(e))
+    return {"id": a["id"]}
+
+
+@app.patch("/api/admin/zlib/accounts/{account_id}")
+async def admin_zlib_account_patch(account_id: int, req: ZlibAccountPatch,
+                                   admin=AdminDep):
+    a = zlib_accounts.get(account_id)
+    if not a:
+        _raise404()
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "email" in fields:
+        fields["email"] = fields["email"].strip().lower()
+    if "domain" in fields:
+        fields["domain"] = fields["domain"].strip()
+    if "password" in fields and not fields["password"]:
+        del fields["password"]  # empty patch = no-op (secrets never blank by accident)
+    if fields:
+        zlib_accounts.update(account_id, **fields)
+        zlib_accounts.delete_session_cache(account_id)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/zlib/accounts/{account_id}")
+def admin_zlib_account_delete(account_id: int, admin=AdminDep):
+    if not zlib_accounts.get(account_id):
+        _raise404()
+    zlib_accounts.delete(account_id)
+    return {"ok": True}
+
+
+@app.post("/api/admin/zlib/accounts/{account_id}/verify")
+async def admin_zlib_account_verify(account_id: int, admin=AdminDep):
+    """One-time login + profile probe: the ledger entry IS the health report."""
+    a = zlib_accounts.get(account_id)
+    if not a:
+        _raise404()
+    if not zlib.enabled:
+        raise HTTPException(503, "zlib CLI not installed")
+    try:
+        limits = await _account_limits(_account_ctx(a))
+        zlib_accounts.clear_error(account_id)
+        return {"ok": True, "daily_remaining": limits.get("daily_remaining"),
+                "daily_allowed": limits.get("daily_allowed")}
+    except ZlibUnavailable as e:
+        zlib_accounts.note_failure(account_id, str(e))
+        raise HTTPException(503, str(e))
+
+
+@app.get("/api/admin/zlib/usage")
+def admin_zlib_usage(limit: int = 100, admin=AdminDep):
+    return zlib_accounts.usage(limit)
+
+
+@app.get("/api/admin/zlib/limits")
+async def admin_zlib_limits(account_id: int = 0, admin=AdminDep):
+    a = zlib_accounts.get(account_id) if account_id else _first_account()
+    try:
+        return await _account_limits(_account_ctx(a) if a else None)
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
 
 
 @app.get("/api/admin/zlib/history")
-async def admin_zlib_history(page: int = 1, fmt: str = "", admin=AdminDep):
+async def admin_zlib_history(page: int = 1, fmt: str = "", account_id: int = 0,
+                             admin=AdminDep):
+    a = zlib_accounts.get(account_id) if account_id else _first_account()
     try:
-        return await zlib.history(page=page, fmt=fmt)
+        return await _account_history(page, fmt, _account_ctx(a) if a else None)
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
 
 
 @app.get("/api/admin/zlib/library")
-async def admin_zlib_library(page: int = 1, admin=AdminDep):
+async def admin_zlib_library(page: int = 1, account_id: int = 0, admin=AdminDep):
+    a = zlib_accounts.get(account_id) if account_id else _first_account()
     try:
-        return await zlib_eapi.library(page=page)
+        return await zlib_eapi.library(page=page, account_id=a["id"] if a else None)
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
 
 
 @app.get("/api/admin/zlib/booklists")
-async def admin_zlib_booklists(admin=AdminDep):
+async def admin_zlib_booklists(account_id: int = 0, admin=AdminDep):
+    a = zlib_accounts.get(account_id) if account_id else _first_account()
     try:
-        return await zlib_eapi.booklists()
+        return await zlib_eapi.booklists(account_id=a["id"] if a else None)
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
 
@@ -1220,6 +1375,70 @@ def _job_backoff(jid: int, job: dict, e: Exception) -> None:
                     next_attempt_at=_now_str(BACKOFF_MIN[attempts - 1]))
 
 
+async def _zlib_download(job: dict, jid: int) -> tuple[bytes, dict]:
+    """Download via the account pool: rotate through enabled accounts until one
+    has quota (profile-probed under the pool lock), download, ledger the result.
+    All accounts exhausted/cold -> waiting_quota at the earliest reset; total
+    config failure (no accounts at all) -> legacy host session, as before."""
+    tried: set[int] = set()
+    last_err: Exception | None = None
+    while True:
+        acc = zlib_accounts.pick_next(exclude=tried)
+        if acc is None:  # pool dry (or empty -> legacy host session below)
+            break
+        tried.add(acc["id"])
+        ctx = _account_ctx(acc)
+        try:
+            async with zlib_accounts.POOL_LOCK:
+                limits = await with_account(ctx, zlib.limits)
+            zlib_accounts.snapshot(acc["id"], limits)
+            if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
+                continue  # account dry — try the next one
+            async with zlib_accounts.POOL_LOCK:
+                data, meta = await with_account(
+                    ctx, zlib.download, job["zlib_id"],
+                    on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
+                    expected_size=parse_size(job["size_text"]))
+            q = zlib_accounts.cached_quota(acc["id"], ttl=None)
+            if q and isinstance(q.get("remaining"), int) and q["remaining"] > 0:
+                q["remaining"] -= 1  # profile re-probe is pointless — the download just proved it
+            zlib_accounts.record_event(acc["id"], "download_ok", detail=job["title"][:200])
+            zlib_accounts.clear_error(acc["id"])
+            return data, meta
+        except ZlibUnavailable as e:
+            last_err = e
+            zlib_accounts.note_failure(acc["id"], str(e))
+            zlib_accounts.record_event(acc["id"], "download_fail", detail=str(e))
+            if zlib_accounts.QUOTA_ERR.search(str(e)):
+                continue  # quota-shaped: this account is done for today — next one
+            raise  # mirror/network trouble: normal backoff ladder, don't rotate
+    reset = zlib_accounts.pool_exhausted()
+    if reset:
+        zlib_accounts.record_event(0, "cooldown", detail=f"pool exhausted, resume {reset}")
+        _job_update(jid, status="waiting_quota", next_attempt_at=max(_now_str(), reset),
+                    error=f"all Z-Library accounts exhausted — waiting for the daily reset ({reset})")
+        raise _StopJob()  # waiting_quota already recorded — skip the backoff ladder
+    if tried:
+        raise last_err or ZlibUnavailable("no usable Z-Library account")
+    # legacy: no pool configured — old single-account behavior (quota probe + download)
+    try:
+        limits = await zlib.limits()
+        if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
+            _job_update(jid, status="waiting_quota", next_attempt_at=_now_str(QUOTA_RECHECK_MIN),
+                        error="daily Z-Library quota exhausted — waiting for the reset")
+            raise _StopJob()
+    except ZlibUnavailable:
+        pass  # quota probe failed — attempt the download anyway
+    return await zlib.download(
+        job["zlib_id"],
+        on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
+        expected_size=parse_size(job["size_text"]))
+
+
+class _StopJob(Exception):
+    """Internal: job state was fully handled (waiting_quota) — not an error."""
+
+
 async def _run_job(job: dict) -> None:
     jid = job["id"]
     try:
@@ -1229,21 +1448,12 @@ async def _run_job(job: dict) -> None:
                 on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
                 expected_size=parse_size(job["size_text"]))
         else:
-            try:
-                limits = await zlib.limits()
-                if isinstance(limits.get("daily_remaining"), int) and limits["daily_remaining"] <= 0:
-                    # quota exhausted: re-check when the daily window may have reset
-                    _job_update(jid, status="waiting_quota", next_attempt_at=_now_str(QUOTA_RECHECK_MIN))
-                    return
-            except ZlibUnavailable:
-                pass  # quota probe failed — attempt the download anyway
-            data, meta = await zlib.download(
-                job["zlib_id"],
-                on_progress=lambda d, t: _job_update(jid, bytes_done=d, bytes_total=t),
-                expected_size=parse_size(job["size_text"]))
+            data, meta = await _zlib_download(job, jid)
     except (ZlibConfigError, AnnasConfigError) as e:
         _job_update(jid, status="failed", error=str(e)[:300], next_attempt_at=None)
         return
+    except _StopJob:
+        return  # job state (waiting_quota) already recorded by the pool logic
     except (ZlibUnavailable, AnnasUnavailable) as e:
         _job_backoff(jid, job, e)
         return

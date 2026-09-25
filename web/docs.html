@@ -89,8 +89,8 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
     <tbody>
-      <tr><td><code>GET</code></td><td><code>/api/zlib/search?q=</code></td><td>search Z-Library (admin account, configured server-wide)</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/zlib/limits</code></td><td>daily quota state</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/search?q=</code></td><td>search Z-Library (pool accounts, configured server-wide)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/limits</code></td><td>daily quota state (aggregate: <code>{total_remaining, total_allowed, accounts:[…]}</code> when a pool exists)</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/zlib/queue</code></td><td><code>{id, name, authors, cover, extension, size}</code> — queue a download (fields from search results)</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/zlib/queue</code></td><td>queue + job statuses</td></tr>
       <tr><td><code>DELETE</code></td><td><code>/api/zlib/queue/{job_id}</code></td><td>cancel/remove a job</td></tr>
@@ -102,8 +102,9 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
       <tr><td><code>POST</code></td><td><code>/api/annas/queue/{job_id}/retry</code></td><td>retry a failed job</td></tr>
     </tbody>
   </table>
-  <p class="result-sub">All users share the one Z-Library account and its daily quota —
-  the queue is FIFO and waits out the limit automatically.</p>
+  <p class="result-sub">All users share the Z-Library account pool and its daily quota —
+  the queue is FIFO, rotates to the next account when one runs dry, and waits out the
+  limit automatically.</p>
 
   <h5>Send to Kindle</h5>
   <table>
@@ -134,7 +135,11 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
       <tr><td><code>POST</code></td><td><code>/api/admin/users/{uid}/set-role</code></td><td><code>{role}</code> — last active admin is protected (409)</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/admin/users/{uid}/reset-password</code></td><td><code>{password}</code></td></tr>
       <tr><td><code>GET</code> / <code>PUT</code></td><td><code>/api/admin/settings</code></td><td>server settings (<code>{values: {key: value}}</code>); secrets are masked on read</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/admin/zlib/limits</code> · <code>/history</code> · <code>/library</code> · <code>/booklists</code></td><td>Z-Library account admin (quota, history re-queue, saved books; booklists not exposed by z-lib's API)</td></tr>
+      <tr><td><code>GET</code> / <code>POST</code></td><td><code>/api/admin/zlib/accounts</code></td><td>list / add pool accounts (<code>{label, email, password, domain}</code>; added accounts are logged in once immediately)</td></tr>
+      <tr><td><code>PATCH</code> / <code>DELETE</code></td><td><code>/api/admin/zlib/accounts/{id}</code></td><td>edit label/email/password/domain/enabled, or remove (session dir deleted)</td></tr>
+      <tr><td><code>POST</code></td><td><code>/api/admin/zlib/accounts/{id}/verify</code></td><td>one-time login + quota probe (health report)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/admin/zlib/usage</code></td><td>per-account usage ledger (quota snapshots, resets, exhaustions, downloads, cooldowns)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/admin/zlib/limits</code> · <code>/history</code> · <code>/library</code> · <code>/booklists</code></td><td>Z-Library account admin (quota, history re-queue, saved books; booklists not exposed by z-lib's API); optional <code>?account_id=</code> picks a pool account</td></tr>
     </tbody>
   </table>
 
@@ -349,11 +354,15 @@ docker compose up -d
 
   <h4>App settings</h4>
   <ul>
-    <li><strong>Z-Library</strong> — account email + password and a mirror (pick a healthy
-    domain with <code>zlib doctor --eapi</code> — though the app also runs this
-    automatically when a login fails and remembers the mirror it picked). All users share this one account and its
-    daily download quota through a single FIFO queue that waits out exhausted limits and
-    retries transient failures (3 attempts, 5/30 min backoff).</li>
+    <li><strong>Z-Library</strong> — a pool of accounts under <em>Admin → Z-Library</em>: each
+    contributes its free daily quota (typically 10 books/day) and the queue rotates through
+    whichever account still has capacity. Each account logs in once (the session persists on
+    the server until it expires) — no repeated logins, one download at a time, never more
+    than an account's <code>daily_allowed</code>. A mirror change is handled the same way as
+    before: on login failure the app probes mirrors with <code>zlib doctor --eapi</code> and
+    remembers the winner <em>for that account</em>. Transient failures still retry via the
+    3-attempt / 5-30 min backoff ladder; when every account is exhausted the pool cools down
+    until the daily reset instead of hammering the mirrors.</li>
     <li><strong>Anna's Archive</strong> — member secret key + mirror. Downloads work with
     or without a membership (members get the fast API path; free accounts automatically
     use the slow partner servers, waitlists included). If search starts failing with a bot
@@ -371,9 +380,12 @@ docker compose up -d
   </ul>
 
   <h4>Z-Library administration</h4>
-  <p>The <em>Z-Library</em> tab shows the account's daily quota, its download history
-  (one click re-queues any item) and the account's saved books (“My library”). Booklists
-  are not exposed by z-lib's API and show as unavailable.</p>
+  <p>The <em>Z-Library</em> tab manages the account pool: add accounts (email + password,
+  optional mirror — each is verified with a one-time login right away), pause/resume or
+  delete them, and watch live per-account quota. Every quota snapshot, daily reset,
+  exhaustion and download is recorded in the usage ledger. The tab also shows the pool's
+  download history (one click re-queues any item) and the accounts' saved books (“My
+  library”). Booklists are not exposed by z-lib's API and show as unavailable.</p>
 
   <p class="result-sub">Secrets (store passwords, keys, SMTP password) are stored in the
   database and masked in the API — the “clear” link empties a field. Same on-disk trust
@@ -390,9 +402,11 @@ docker compose up -d
   an admin, or if this is your server, approve yourself under <em>Admin → Users</em>.</p>
 
   <h4>The download queue says the Z-Library limit is exhausted</h4>
-  <p>All users share one account with a daily quota. The queue waits and re-checks
-  automatically — jobs resume when the limit resets. Failed jobs retry on their own
-  (3 attempts, 5/30 min backoff); you can also retry or cancel from the Downloads panel.</p>
+  <p>All users share the account pool's daily quotas. The queue rotates to the next account
+  with capacity; when every account is dry it waits and re-checks automatically — jobs
+  resume at the daily reset. Failed jobs retry on their own (3 attempts, 5/30 min backoff);
+  you can also retry or cancel from the Downloads panel. Add more accounts under
+  <em>Admin → Z-Library</em> to raise the pool's daily total.</p>
 
   <h4>Uploading the same file twice</h4>
   <p>Re-uploads of an identical file dedup instantly (content-addressed storage by

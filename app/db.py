@@ -112,6 +112,33 @@ CREATE TABLE IF NOT EXISTS api_tokens(
   label TEXT NOT NULL DEFAULT '',
   created_at TEXT DEFAULT (datetime('now'))
 );
+-- pool of Z-Library accounts (each gets its own CLI session dir); the pool is
+-- server-wide, jobs are NOT bound to an account — the worker rotates through
+-- whatever account still has daily quota at claim time
+CREATE TABLE IF NOT EXISTS zlib_accounts(
+  id INTEGER PRIMARY KEY,
+  label TEXT NOT NULL DEFAULT '',
+  email TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL DEFAULT '',
+  domain TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  ord INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+-- per-account capacity ledger: quota snapshots, resets, exhaustions, downloads
+-- (account_id=0 rows are pool-wide events, e.g. 'all accounts exhausted')
+CREATE TABLE IF NOT EXISTS zlib_usage(
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL DEFAULT 0,
+  ts TEXT DEFAULT (datetime('now')),
+  event TEXT NOT NULL,
+  daily_amount INTEGER,
+  daily_allowed INTEGER,
+  daily_remaining INTEGER,
+  detail TEXT NOT NULL DEFAULT ''
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
   title, authors, categories, isbn, content='books', content_rowid='id'
 );
@@ -186,6 +213,23 @@ def init() -> None:
         _bootstrap_admin(c)
         from . import settings as _settings  # lazy: settings imports db.conn
         _settings.seed_legacy_env(c)
+        _seed_zlib_accounts(c)
+
+
+def _seed_zlib_accounts(c: sqlite3.Connection) -> None:
+    """One-time migration: the single-account settings (zlib.email/password/domain)
+    become account #1 of the pool. Settings keys stay (read-only legacy); the
+    account row is the live truth afterwards. Runs only while the table is empty."""
+    if c.execute("SELECT 1 FROM zlib_accounts LIMIT 1").fetchone():
+        return
+    email = c.execute("SELECT value FROM settings WHERE key='zlib.email'").fetchone()
+    pwd = c.execute("SELECT value FROM settings WHERE key='zlib.password'").fetchone()
+    if not (email and pwd and email["value"] and pwd["value"]):
+        return
+    dom = c.execute("SELECT value FROM settings WHERE key='zlib.domain'").fetchone()
+    c.execute("INSERT INTO zlib_accounts(label, email, password, domain) VALUES(?,?,?,?)",
+              ("", email["value"], pwd["value"], (dom["value"] if dom else "") or ""))
+    print("bookplate: seeded Z-Library account pool from legacy settings", flush=True)
 
 
 def _bootstrap_admin(c: sqlite3.Connection) -> None:

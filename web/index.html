@@ -167,11 +167,8 @@
 
           <section id="admin-settings" hidden>
             <form id="admin-settings-form">
-              <h3>Z-Library account</h3>
-              <input type="email" id="set-zlib-email" placeholder="z-lib account email">
-              <div class="secret-row"><input type="password" id="set-zlib-password" placeholder="password" autocomplete="new-password">
-                <button type="button" class="btn-ghost link" data-clear="zlib.password">clear</button></div>
-              <input type="url" id="set-zlib-domain" placeholder="mirror, e.g. https://z-lib.gd">
+              <h3>Z-Library</h3>
+              <p class="result-sub">Accounts are managed under <button type="button" class="btn-ghost link admin-tab" data-tab="zlib">Z-Library</button> — the pool there rotates daily free quotas (10 books/day each). Legacy values below were migrated automatically.</p>
               <h3>Anna's Archive</h3>
               <div class="secret-row"><input type="password" id="set-annas-key" placeholder="secret key" autocomplete="new-password">
                 <button type="button" class="btn-ghost link" data-clear="annas.secret_key">clear</button></div>
@@ -206,6 +203,16 @@
 
           <section id="admin-zlib" hidden>
             <div id="zlib-admin-quota" class="result-sub"></div>
+            <h3>Accounts</h3>
+            <p class="result-sub">The pool rotates accounts that still have daily quota. Each login is one-time: the session persists until it expires. Every snapshot, reset and download is recorded in the usage ledger below.</p>
+            <div id="zlib-accounts" class="admin-table"></div>
+            <form id="zlib-account-form" class="admin-row">
+              <input type="text" id="za-label" placeholder="label (optional)">
+              <input type="email" id="za-email" placeholder="z-lib account email" required>
+              <input type="password" id="za-pass" placeholder="password" autocomplete="new-password" required>
+              <input type="url" id="za-domain" placeholder="mirror, e.g. https://z-lib.gd">
+              <button class="btn-primary" type="submit">Add &amp; verify</button>
+            </form>
             <h3>Download history</h3>
             <div class="admin-pager"><button class="btn-ghost" id="zh-prev" type="button">←</button>
               <span id="zh-page" class="result-sub"></span>
@@ -215,6 +222,8 @@
             <div id="zlib-library" class="admin-table"></div>
             <h3>Booklists</h3>
             <div id="zlib-booklists" class="admin-table"></div>
+            <h3>Usage ledger</h3>
+            <div id="zlib-usage" class="admin-table"></div>
           </section>
 
           <section id="admin-api" hidden>
