@@ -21,7 +21,10 @@ from .db import DATA_DIR, conn
 # one CLI at a time, process-wide (single uvicorn process — see Dockerfile CMD)
 POOL_LOCK = asyncio.Lock()
 PROFILE_TTL = 600.0  # re-probe an account's profile at most every 10 min
-QUOTA_ERR = re.compile(r"limit|quota|exceeded|daily", re.I)
+# Dry-account downloads fail with the CLI's "EAPI returned no file link" (verified
+# live against a 0-remaining account) — zero quota words in it, so "no file link"
+# must count as quota-shaped or the worker backoffs instead of rotating.
+QUOTA_ERR = re.compile(r"limit|quota|exceeded|daily|no file link", re.I)
 
 # account_id -> {allowed, remaining, reset_at, checked_at, day}
 _QUOTA: dict[int, dict] = {}

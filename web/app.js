@@ -864,7 +864,8 @@ function jobStatusLine(j) {
   const bytes = j.bytes_done != null ? ` · ${fmtBytes(j.bytes_done)}${j.bytes_total ? ` / ${fmtBytes(j.bytes_total)}` : ""}` : "";
   switch (j.status) {
     case "queued": return `Queued${j.error ? ` · last error: ${j.error}` : ""}`;
-    case "waiting_quota": return "Waiting for daily quota — retries automatically";
+    case "waiting_quota":
+      return j.error || "Waiting for daily quota — retries automatically";
     case "downloading": return `Downloading${j.bytes_total ? ` ${Math.round((j.bytes_done / j.bytes_total) * 100)}%` : ""}${bytes}`;
     case "processing": return "Processing…";
     case "done": return "On shelf ✓";

@@ -204,6 +204,15 @@ class WorkerRotationTests(Base):
         events = [r["event"] for r in zlib_accounts.usage()]
         self.assertIn("cooldown", events)
 
+    def test_cli_no_file_link_rotates(self):
+        # REAL dry-account CLI error (verified live): no quota words, but the
+        # account is done for the day — must rotate to the next account
+        import app.zlib_accounts as za_mod
+        a, b = self._acc("a@x"), self._acc("b@x")
+        self.assertIn("no file link", za_mod.QUOTA_ERR.pattern)
+        self.assertTrue(za_mod.QUOTA_ERR.search(
+            "Z-Library download failed: zlibrary: download failed: EAPI returned no file link"))
+
     def test_transient_error_does_not_rotate(self):
         a = self._acc()
 
