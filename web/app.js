@@ -1496,15 +1496,19 @@ async function loadZlibAccounts() {
   let accs;
   try { accs = await api("/api/admin/zlib/accounts"); } catch (e) { box.textContent = e.message; return; }
   if (!accs.length) { box.textContent = "No accounts yet — add one below."; return; }
+  const head = document.createElement("div");
+  head.className = "admin-grid admin-grid-head";
+  head.innerHTML = `<div>Account</div><div>Status</div><div class="g-size">Daily quota</div><div></div>`;
+  box.appendChild(head);
   for (const a of accs) {
     const row = document.createElement("div");
-    row.className = "admin-row";
-    const quota = a.daily_remaining == null ? "quota unknown (Verify to probe)"
-      : `${a.daily_remaining}/${a.daily_allowed ?? "?"} left${a.reset_at ? ` · resets ${a.reset_at}` : ""}`;
+    row.className = "admin-grid";
+    const quota = a.daily_remaining == null ? "quota unknown — Verify to probe"
+      : `${a.daily_remaining}/${a.daily_allowed ?? "?"} left${a.reset_at ? ` · resets ${a.reset_at.slice(5, 16)} UTC` : ""}`;
     row.innerHTML = `
-      <div class="au-email">${esc(a.label || a.email_masked)}${a.label ? ` <span class="result-sub">(${esc(a.email_masked)})</span>` : ""}</div>
+      <div class="au-email" title="${esc(a.email)}">${esc(a.label || a.email_masked)}${a.label ? ` <span class="result-sub">(${esc(a.email_masked)})</span>` : ""}</div>
       <span class="badge">${a.enabled ? "active" : "paused"}</span>
-      <span class="result-sub">${esc(quota)}${a.last_error ? ` · ⚠ ${esc(a.last_error.slice(0, 80))}` : ""}</span>
+      <span class="result-sub g-size">${esc(quota)}${a.last_error ? ` · ⚠ ${esc(a.last_error.slice(0, 80))}` : ""}</span>
       <span class="au-actions"></span>`;
     const actions = row.querySelector(".au-actions");
     const btn = (label, fn, cls = "btn-ghost") => {
@@ -1557,11 +1561,11 @@ $("#zh-next").onclick = () => { if (zhPage < zhTotal) { zhPage++; loadZlibHistor
 
 const bookRow = (b, queueLabel) => {
   const row = document.createElement("div");
-  row.className = "admin-row";
+  row.className = "admin-grid";
   row.innerHTML = `
-    <div class="au-email">${esc(b.name || b.id)}</div>
+    <div class="au-email" title="${esc(b.name || String(b.id))}">${esc(b.name || b.id)}</div>
     <span class="badge">${esc((b.extension || "").toUpperCase())}</span>
-    <span class="result-sub">${esc(b.size || "")}${b.year ? " · " + esc(b.year) : ""}</span>
+    <span class="result-sub g-size">${esc(b.size || "")}${b.year ? " · " + esc(b.year) : ""}</span>
     <span class="au-actions"></span>`;
   if (queueLabel) {
     const btn = document.createElement("button");

@@ -494,6 +494,22 @@ div.queue-cover.generated {
 }
 .admin-row:last-child { border-bottom: none; }
 .admin-row:first-child { border-top: 1px solid var(--line); }
+/* shared column grid so sibling sections (accounts / history / library)
+   align: name | badge | detail | actions */
+.admin-grid {
+  display: grid; grid-template-columns: minmax(0, 1.6fr) 90px minmax(0, 1fr) auto;
+  gap: 8px; align-items: center; padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.admin-grid:last-child { border-bottom: none; }
+.admin-grid:first-child { border-top: 1px solid var(--line); }
+.admin-grid-head { color: var(--ink-soft); font-size: var(--fs-sm); font-weight: 600; }
+.admin-grid .au-email { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-grid .au-actions { min-width: 178px; justify-content: flex-end; }
+@media (max-width: 640px) {
+  .admin-grid { grid-template-columns: minmax(0, 1fr) 90px auto; }
+  .admin-grid .g-size { display: none; }  /* size/year drops out on phones */
+}
 .kindle-device {
   display: flex; align-items: baseline; gap: 8px; width: 100%; text-align: left;
   padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
