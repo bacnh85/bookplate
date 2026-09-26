@@ -780,9 +780,7 @@ function openDetail(r) {
   loadRelated(r);
   refreshQueue();  // mirror any existing queue state for this book onto the button
   if (rowSource(r) === "zlib") {
-    api("/api/zlib/limits").then((l) => {
-      $("#detail-quota").textContent = quotaText(l);
-    }).catch(() => { /* unconfigured — surfaced on download */ });
+    refreshQuota();
   } else {
     $("#detail-quota").textContent = "";  // anna's archive: no quota endpoint
   }
@@ -849,6 +847,7 @@ async function refreshQueue() {
   try { ({ jobs } = await api("/api/zlib/queue")); } catch { /* signed out etc. */ }
   renderQueue(jobs);
   mirrorDetail(jobs);
+  refreshQuota();  // downloads burn quota — keep detail/dialog lines live while the poller runs
   const need = jobs.some((j) => !QUEUE_TERMINAL.includes(j.status)) || $("#downloads-dialog").open;
   if (need && !queueTimer) queueTimer = setInterval(refreshQueue, 3000);
   if (!need && queueTimer) { clearInterval(queueTimer); queueTimer = null; }
@@ -914,6 +913,17 @@ function renderQueue(jobs) {
   $("#downloads-badge").textContent = n;
 }
 
+/* quota lines: search header + detail/dialog lines share one refresh.
+   Writing while hidden is harmless — skip visibility checks (ponytail). */
+function refreshQuota() {
+  api("/api/zlib/limits").then((l) => {
+    const q = quotaText(l);
+    const t = $("#store-zlib-quota"); if (t) t.textContent = q;
+    $("#downloads-quota").textContent = q;
+    if (!detailBook || rowSource(detailBook) === "zlib") $("#detail-quota").textContent = q;
+  }).catch(() => { /* unconfigured — surfaced on download */ });
+}
+
 function mirrorDetail(jobs) {
   if (!detailBook || !$("#detail-dialog").open) return;
   const btn = $("#detail-download");
@@ -929,9 +939,7 @@ function mirrorDetail(jobs) {
 $("#downloads-btn").onclick = () => {
   $("#downloads-dialog").showModal();
   refreshQueue();
-  api("/api/zlib/limits").then((l) => {
-    $("#downloads-quota").textContent = quotaText(l);
-  }).catch(() => { $("#downloads-quota").textContent = ""; });
+  refreshQuota();
 };
 $("#downloads-close").onclick = () => $("#downloads-dialog").close();
 $("#downloads-dialog").addEventListener("click", (e) => {
