@@ -781,7 +781,7 @@ function openDetail(r) {
   refreshQueue();  // mirror any existing queue state for this book onto the button
   if (rowSource(r) === "zlib") {
     api("/api/zlib/limits").then((l) => {
-      $("#detail-quota").textContent = `Downloads today: ${l.daily_remaining ?? "?"} of ${l.daily_allowed ?? "?"} remaining`;
+      $("#detail-quota").textContent = quotaText(l);
     }).catch(() => { /* unconfigured — surfaced on download */ });
   } else {
     $("#detail-quota").textContent = "";  // anna's archive: no quota endpoint
