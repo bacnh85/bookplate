@@ -204,9 +204,11 @@ def list_books(q: str = "", user=UserDep):
                  WHERE ub.user_id=:uid AND ub.book_id=b.id) AS own,
              (SELECT u.username FROM shares s JOIN users u ON u.id=s.from_user
                  WHERE s.book_id=b.id AND s.to_user=:uid LIMIT 1) AS shared_by,
-             rp.pct AS progress_pct
+             rp.pct AS progress_pct, m.status AS status, m.rating AS rating
              FROM books b LEFT JOIN reading_progress rp
                  ON rp.book_id=b.id AND rp.user_id=:uid
+             LEFT JOIN user_book_meta m
+                 ON m.book_id=b.id AND m.user_id=:uid
              WHERE b.id IN (
                SELECT book_id FROM user_books WHERE user_id=:uid
                UNION SELECT book_id FROM shares WHERE to_user=:uid)"""
@@ -240,10 +242,12 @@ def get_book(book_id: int, user=UserDep):
             raise HTTPException(404, "not found")
         row = con.execute(
             """SELECT b.*, rp.cfi AS progress_cfi, rp.pct AS progress_pct,
-                      rp.updated_at AS progress_at
+                      rp.updated_at AS progress_at, m.status AS status, m.rating AS rating
                FROM books b LEFT JOIN reading_progress rp
                    ON rp.book_id=b.id AND rp.user_id=?
-               WHERE b.id=?""", (user["id"], book_id)).fetchone()
+               LEFT JOIN user_book_meta m
+                   ON m.book_id=b.id AND m.user_id=?
+               WHERE b.id=?""", (user["id"], user["id"], book_id)).fetchone()
         return dict(row) if row else _raise404()
 
 
@@ -254,11 +258,14 @@ class ProgressReq(BaseModel):
 
 @app.put("/api/books/{book_id}/progress")
 def put_progress(book_id: int, req: ProgressReq, user=UserDep):
-    """Reading position sync from the reader. Per-user; upsert."""
+    """Reading position sync from the reader. Per-user; upsert. A forward jump
+    also logs a reading session — the single funnel all clients flow through."""
     pct = max(0, min(100, req.pct))
     with db.conn() as con:
         if not _book_visible(con, user["id"], book_id):
             raise HTTPException(404, "not found")
+        prev = con.execute("SELECT pct, updated_at FROM reading_progress WHERE user_id=? AND book_id=?",
+                           (user["id"], book_id)).fetchone()
         con.execute(
             """INSERT INTO reading_progress(user_id, book_id, cfi, pct, updated_at)
                VALUES(?,?,?,?,datetime('now'))
@@ -266,14 +273,207 @@ def put_progress(book_id: int, req: ProgressReq, user=UserDep):
                DO UPDATE SET cfi=excluded.cfi, pct=excluded.pct,
                              updated_at=datetime('now')""",
             (user["id"], book_id, req.cfi, pct))
+        # honest estimate: only forward progress earns time, capped at 30 min
+        # (idle-open tabs would otherwise log hours); first-ever progress has no
+        # baseline, so no session row.
+        if prev and pct > prev["pct"]:
+            minutes = min(30.0, max(0.0, (time.time() - _parse_ts(prev["updated_at"])) / 60))
+            con.execute(
+                """INSERT INTO reading_sessions(user_id, book_id, pct_from, pct_to, minutes)
+                   VALUES(?,?,?,?,?)""",
+                (user["id"], book_id, prev["pct"], pct, round(minutes, 2)))
+        # auto read-status: first movement marks 'reading', completion marks
+        # 'read' — but never overrides an explicit choice ('want'/'dnf'/'read')
+        if pct > 0:
+            new_status = "read" if pct >= 100 else "reading"
+            con.execute(
+                """INSERT INTO user_book_meta(user_id, book_id, status) VALUES(?,?,?)
+                   ON CONFLICT(user_id, book_id) DO UPDATE SET status=excluded.status,
+                     updated_at=datetime('now')
+                   WHERE user_book_meta.status IS NULL
+                      OR (user_book_meta.status='reading' AND excluded.status='read')""",
+                (user["id"], book_id, new_status))
         # server timestamp returned so clients can anchor their clock (skew-proof resume)
         ts = con.execute("SELECT updated_at FROM reading_progress WHERE user_id=? AND book_id=?",
                          (user["id"], book_id)).fetchone()["updated_at"]
     return {"ok": True, "updated_at": ts}
 
 
+def _parse_ts(ts: str) -> float:
+    """SQLite datetime('now') is UTC 'YYYY-MM-DD HH:MM:SS' -> epoch seconds."""
+    try:
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return time.time()  # unknown format: treat as just-now (no phantom minutes)
+
+
+@app.get("/api/stats")
+def get_stats(user=UserDep):
+    with db.conn() as con:
+        minutes_month = con.execute(
+            """SELECT COALESCE(SUM(minutes),0) m FROM reading_sessions
+               WHERE user_id=? AND ts >= datetime('now', 'start of month')""",
+            (user["id"],)).fetchone()["m"]
+        minutes_total = con.execute(
+            "SELECT COALESCE(SUM(minutes),0) m FROM reading_sessions WHERE user_id=?",
+            (user["id"],)).fetchone()["m"]
+        days = {r["d"]: r["m"] or 0 for r in con.execute(
+            """SELECT date(ts) d, SUM(minutes) m FROM reading_sessions
+               WHERE user_id=? AND date(ts) > date('now', '-30 days')
+               GROUP BY date(ts)""", (user["id"],))}
+        streak = 0
+        probe = datetime.now(timezone.utc).date()
+        if probe.isoformat() not in days:  # streak may end yesterday (today not read yet)
+            probe -= timedelta(days=1)
+        while probe.isoformat() in days:
+            streak += 1
+            probe -= timedelta(days=1)
+        finished_year = con.execute(
+            """SELECT COUNT(*) c FROM reading_progress rp
+               WHERE rp.user_id=? AND rp.pct>=100 AND rp.updated_at >= datetime('now', 'start of year')""",
+            (user["id"],)).fetchone()["c"]
+        top_books = [dict(r) for r in con.execute(
+            """SELECT b.id, b.title, ROUND(SUM(s.minutes),0) minutes
+               FROM reading_sessions s JOIN books b ON b.id=s.book_id
+               WHERE s.user_id=? GROUP BY s.book_id ORDER BY minutes DESC LIMIT 5""",
+            (user["id"],))]
+    # contiguous last-30-days series for the CSS bar strip
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    day_list = [{"date": (today - _td(days=29 - i)).isoformat(),
+                 "minutes": round(days.get((today - _td(days=29 - i)).isoformat(), 0), 1)}
+                for i in range(30)]
+    return {"minutes_month": round(minutes_month), "minutes_total": round(minutes_total),
+            "streak_days": streak, "finished_year": finished_year,
+            "days": day_list, "top_books": top_books}
+
+
+class AnnotationReq(BaseModel):
+    cfi: str = Field(min_length=1, max_length=512)
+    text: str = Field(default="", max_length=2000)
+    note: str = Field(default="", max_length=5000)
+    color: str = Field(default="yellow", pattern="^(yellow|green|blue|red|under)$")
+    kind: str = Field(default="highlight", pattern="^(highlight|underline|bookmark)$")
+
+
+class AnnotationPatch(BaseModel):
+    note: str | None = Field(default=None, max_length=5000)
+    color: str | None = Field(default=None, pattern="^(yellow|green|blue|red|under)$")
+
+
+@app.get("/api/books/{book_id}/annotations")
+def list_annotations(book_id: int, user=UserDep):
+    with db.conn() as con:
+        if not _book_visible(con, user["id"], book_id):
+            raise HTTPException(404, "not found")
+        rows = con.execute(
+            "SELECT * FROM annotations WHERE user_id=? AND book_id=? ORDER BY id",
+            (user["id"], book_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/books/{book_id}/annotations", status_code=201)
+def create_annotation(book_id: int, req: AnnotationReq, user=UserDep):
+    with db.conn() as con:
+        if not _book_visible(con, user["id"], book_id):
+            raise HTTPException(404, "not found")
+        cur = con.execute(
+            """INSERT INTO annotations(user_id, book_id, cfi, text, note, color, kind)
+               VALUES(?,?,?,?,?,?,?)""",
+            (user["id"], book_id, req.cfi, req.text, req.note, req.color, req.kind))
+        row = con.execute("SELECT * FROM annotations WHERE id=?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def _own_annotation(con, aid: int, user_id: int):
+    row = con.execute("SELECT * FROM annotations WHERE id=?", (aid,)).fetchone()
+    if not row or row["user_id"] != user_id:
+        _raise404()
+    return row
+
+
+@app.patch("/api/annotations/{aid}")
+def update_annotation(aid: int, req: AnnotationPatch, user=UserDep):
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "nothing to update")
+    with db.conn() as con:
+        _own_annotation(con, aid, user["id"])
+        sets = ", ".join(f"{k}=?" for k in fields)
+        con.execute(f"UPDATE annotations SET {sets} WHERE id=?", (*fields.values(), aid))
+        row = con.execute("SELECT * FROM annotations WHERE id=?", (aid,)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/annotations/{aid}")
+def delete_annotation(aid: int, user=UserDep):
+    with db.conn() as con:
+        _own_annotation(con, aid, user["id"])
+        con.execute("DELETE FROM annotations WHERE id=?", (aid,))
+    return {"ok": True}
+
+
 def _raise404():
     raise HTTPException(404, "not found")
+
+
+@app.get("/api/annotations/export.md")
+def export_annotations(book_id: int | None = None, user=UserDep):
+    """Notes as a Markdown download — one book or the whole shelf."""
+    with db.conn() as con:
+        if book_id is not None and not _book_visible(con, user["id"], book_id):
+            raise HTTPException(404, "not found")
+        rows = con.execute(
+            """SELECT a.*, b.title FROM annotations a JOIN books b ON b.id=a.book_id
+               WHERE a.user_id=? AND a.book_id IN (
+                 SELECT book_id FROM user_books WHERE user_id=?
+                 UNION SELECT book_id FROM shares WHERE to_user=?)
+               ORDER BY b.title, a.id""",
+            (user["id"], user["id"], user["id"])).fetchall()
+        rows = [dict(r) for r in rows if book_id is None or r["book_id"] == book_id]
+    lines = ["# My notes\n"]
+    last_title = None
+    for r in rows:
+        if r["title"] != last_title:
+            lines.append(f"\n## {r['title']}\n")
+            last_title = r["title"]
+        if r["kind"] == "bookmark":
+            lines.append(f"- Bookmark at {r['cfi']}")
+            continue
+        lines.append(f"> {r['text']}\n")
+        if r["note"]:
+            lines.append(f"{r['note']}\n")
+    body = "\n".join(lines) + "\n"
+    fname = "notes" if book_id is None else f"notes-book-{book_id}"
+    return Response(body, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}.md"'})
+
+
+class BookMetaReq(BaseModel):
+    status: str | None = Field(default=None, pattern="^(want|reading|read|dnf)$")
+    rating: int | None = Field(default=None, ge=0, le=5)
+
+
+@app.put("/api/books/{book_id}/meta")
+def put_book_meta(book_id: int, req: BookMetaReq, user=UserDep):
+    """Per-user read status / rating. COALESCE upsert: a null field keeps the
+    stored value, so clients update status and rating independently."""
+    if req.status is None and req.rating is None:
+        raise HTTPException(400, "nothing to update")
+    with db.conn() as con:
+        if not _book_visible(con, user["id"], book_id):
+            raise HTTPException(404, "not found")
+        con.execute(
+            """INSERT INTO user_book_meta(user_id, book_id, status, rating)
+               VALUES(?,?,?,?)
+               ON CONFLICT(user_id, book_id) DO UPDATE SET
+                 status=COALESCE(excluded.status, user_book_meta.status),
+                 rating=COALESCE(excluded.rating, user_book_meta.rating),
+                 updated_at=datetime('now')""",
+            (user["id"], book_id, req.status, req.rating))
+        row = con.execute("SELECT status, rating FROM user_book_meta WHERE user_id=? AND book_id=?",
+                          (user["id"], book_id)).fetchone()
+    return dict(row)
 
 
 async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
@@ -310,11 +510,12 @@ async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
             ccolor = metadata.cover_color(meta["cover"], meta["cover_ext"]) if meta["cover"] else None
             cur = con.execute(
                 """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
-                   categories, description, year, cover_ext, cover_color, source, added_by)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   categories, description, year, series, series_index, cover_ext, cover_color, source, added_by)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (sha, tmp.suffix.lstrip(".").lower(), size, meta["title"], _norm_title(meta["title"]),
                  meta["authors"], meta["isbn"], meta["language"], meta["categories"],
-                 meta["description"], meta["year"], meta["cover_ext"], ccolor, source, user_id))
+                 meta["description"], meta["year"], meta.get("series") or None,
+                 meta.get("series_index"), meta["cover_ext"], ccolor, source, user_id))
             if meta["cover"]:
                 cover_path(sha, meta["cover_ext"] or "jpg").write_bytes(meta["cover"])
             book = dict(con.execute("SELECT * FROM books WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -474,7 +675,8 @@ def share_book(book_id: int, req: ShareReq, user=UserDep):
 
 # ---------- book metadata / cover management (owner or admin only) ----------
 
-META_FIELDS = ("title", "authors", "categories", "year", "description", "language", "isbn")
+META_FIELDS = ("title", "authors", "categories", "year", "description", "language", "isbn",
+               "series", "series_index")
 
 
 class BookPatch(BaseModel):
@@ -485,10 +687,30 @@ class BookPatch(BaseModel):
     description: str | None = None
     language: str | None = None
     isbn: str | None = None
+    series: str | None = None
+    series_index: float | None = None
 
 
 class RemetaReq(BaseModel):
     query: str = ""
+
+
+@app.get("/api/series")
+def list_series(user=UserDep):
+    """Visible books grouped by series, ordered by series name then index."""
+    with db.conn() as con:
+        rows = con.execute(
+            """SELECT b.id, b.series, b.series_index, b.title FROM books b
+               WHERE b.series IS NOT NULL AND b.series != '' AND b.id IN (
+                 SELECT book_id FROM user_books WHERE user_id=?
+                 UNION SELECT book_id FROM shares WHERE to_user=?)
+               ORDER BY b.series COLLATE NOCASE, b.series_index, b.title""",
+            (user["id"], user["id"])).fetchall()
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(r["series"], []).append(
+            {"id": r["id"], "title": r["title"], "series_index": r["series_index"]})
+    return [{"series": s, "count": len(bs), "books": bs} for s, bs in groups.items()]
 
 
 def _editable_book(con, book_id: int, user):

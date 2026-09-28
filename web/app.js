@@ -125,6 +125,8 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 let shelfFilter = null;  // null = All; "books" | "pdf" | "cbz"
 const EXT_GROUPS = { all: null, books: ["epub", "mobi", "azw", "azw3", "prc", "fb2"], pdf: ["pdf"], cbz: ["cbz"] };
 const FILTER_NAMES = { all: "All", books: "Books", pdf: "PDFs", cbz: "Comics" };
+const STATUS_NAMES = { want: "Want to read", reading: "Reading", read: "Read", dnf: "Did not finish" };
+let metaFilter = null;  // null = any; "want" | "reading" | "read" | "dnf" | "rated"
 
 const adopted = new Set();  // legacy localStorage progress already offered to the server
 
@@ -145,12 +147,15 @@ function bookTile(b) {
     pct == null ? (isNew ? `<span class="tile-new">New</span>` : "") :
     pct >= 100 ? `<span class="tile-progress">Finished</span>` :
     `<span class="tile-progress">${pct}%</span>`;
+  const STATUS_GLYPH = { want: "＋", reading: "📖", read: "✓", dnf: "✕" };
+  const glyph = b.status && STATUS_GLYPH[b.status] ? `<span class="tile-status" title="${esc(STATUS_NAMES[b.status])}">${STATUS_GLYPH[b.status]}</span>` : "";
+  const stars = b.rating ? `<span class="tile-rating" title="${b.rating}/5">${"★".repeat(b.rating)}</span>` : "";
   el.innerHTML = `
     <div class="cover" title="${esc(b.title)}">
       <div class="spine-title">${esc(b.title)}</div>
       ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
     </div>
-    <div class="tile-meta">${progress}
+    <div class="tile-meta">${glyph}${stars}${progress}
       <button class="tile-more" type="button" aria-haspopup="menu" aria-label="Actions — ${esc(b.title)}">⋯</button>
     </div>`;
   el.querySelector(".cover").onclick = () => openReader(b.id);
@@ -166,13 +171,76 @@ function fillTiles(box, books) {
 
 async function loadShelf(q = "") {
   const books = await api(`/api/books?q=${encodeURIComponent(q)}`);
-  const filtered = shelfFilter ? books.filter((b) => EXT_GROUPS[shelfFilter].includes(b.ext)) : books;
+  let filtered = shelfFilter ? books.filter((b) => EXT_GROUPS[shelfFilter].includes(b.ext)) : books;
+  if (metaFilter) filtered = filtered.filter((b) =>
+    metaFilter === "rated" ? b.rating > 0 : b.status === metaFilter);
   $("#library-title").textContent = FILTER_NAMES[shelfFilter] || "All";
   $("#library-count").textContent = filtered.length ? `${filtered.length} item${filtered.length > 1 ? "s" : ""}` : "";
   $("#shelf-empty").innerHTML = q ? `No results for “${esc(q)}”.`
     : `Nothing here yet.<small>Add books, or use the Book Store to pull them from Z-Library.</small>`;
   $("#shelf-empty").hidden = !!filtered.length;
   fillTiles($("#grid"), filtered);
+}
+
+/* status filter chips (client-side, same pattern as the format chips) */
+function renderMetaChips() {
+  const wrap = $("#meta-chips");
+  wrap.innerHTML = "";
+  for (const [key, label] of [["", "Any status"], ["want", "Want"], ["reading", "Reading"],
+                              ["read", "Read"], ["dnf", "DNF"], ["rated", "Rated ★"],
+                              ["series", "Series"]]) {
+    if (key === "series") {
+      const sep = document.createElement("span");
+      sep.className = "chip-sep";
+      wrap.append(sep);
+    }
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip" + ((metaFilter || "") === key ? " active" : "");
+    chip.textContent = label;
+    chip.onclick = () => {
+      metaFilter = key || null;
+      $("#grid").hidden = key === "series";
+      $("#series-groups").hidden = key !== "series";
+      renderMetaChips();
+      key === "series" ? loadSeriesGroups() : loadShelf($("#search").value);
+    };
+    wrap.append(chip);
+  }
+}
+
+async function loadSeriesGroups() {
+  let groups;
+  try { groups = await api("/api/series"); } catch { return; }
+  const box = $("#series-groups");
+  box.innerHTML = "";
+  $("#shelf-empty").hidden = !!groups.length;
+  $("#shelf-empty").innerHTML = "No series on your shelf.<small>Series metadata is read on upload (calibre/EPUB3/ComicInfo) or editable per book via the ⋯ menu.</small>";
+  for (const g of groups) {
+    const sec = document.createElement("section");
+    sec.className = "series-group";
+    const nums = g.books.map((b) => b.series_index).filter((n) => n != null);
+    const nextN = nums.length ? Math.floor(Math.max(...nums)) + 1 : 1;
+    sec.innerHTML = `<h3>${esc(g.series)} <span class="result-sub">${g.count}</span></h3>`;
+    const strip = document.createElement("div");
+    strip.className = "strip";
+    fillTiles(strip, g.books);
+    sec.append(strip);
+    box.append(sec);
+  }
+}
+
+async function setStatus(b, status) {  // status null = clear
+  await api(`/api/books/${b.id}/meta`, { method: "PUT", json: status ? { status } : { status: null, rating: null } });
+  rerenderView();
+}
+
+async function rateBook(b) {
+  const input = prompt(`Rate "${b.title}" (1–5, or 0 to clear):`, b.rating || "");
+  if (input == null) return;
+  const n = Math.max(0, Math.min(5, parseInt(input, 10) || 0));
+  await api(`/api/books/${b.id}/meta`, { method: "PUT", json: { rating: n || null } });
+  rerenderView();
 }
 
 /* ---------- context menu (⋯ on tiles) ---------- */
@@ -219,6 +287,11 @@ function bookMenuItems(b) {
   if (me_kindle && ["epub", "pdf"].includes(b.ext))
     items.push({ label: "Send to Kindle…", fn: () => sendToKindle(null, b) });
   if (b.own) items.push({ label: "Share…", fn: () => shareBook(b) });
+  for (const [key, label] of Object.entries(STATUS_NAMES))
+    if (b.status !== key) items.push({ label: `Mark as ${label}`, fn: () => setStatus(b, key) });
+  if (b.status) items.push({ label: "Clear status", fn: () => setStatus(b, null) });
+  items.push({ label: b.rating ? `Change rating (${b.rating}/5)…` : "Rate…", fn: () => rateBook(b) });
+  items.push("sep", { label: "Export notes", fn: () => downloadNotes(b.id) });
   items.push("sep", { label: "Add to Collection…", fn: () => openCollectionDialog(b) });
   if (b.own) items.push("sep", { label: "Remove from shelf", danger: true, fn: async () => {
     if (!(await confirmDialog("Remove from shelf", `Remove "${b.title}" from your shelf?`))) return;
@@ -416,6 +489,8 @@ function show(view, collectionId = null, keepDrawer = false) {
     b.classList.toggle("active", on);
   });
   $("#collection-actions").hidden = view !== "collection";
+  $("#meta-chips").hidden = view !== "library";
+  if (view === "library") renderMetaChips();
   if (view === "home") loadHome();
   else if (view === "store") showStore();
   else if (view === "library") loadShelf($("#search").value);
@@ -1183,6 +1258,9 @@ function aiMetaCard(a) {
 
 /* ---------- reader ---------- */
 function openReader(id) { location.assign(`/reader.html?id=${id}`); }
+function downloadNotes(id) {  // server sets Content-Disposition — plain navigation downloads
+  location.assign(`/api/annotations/export.md?book_id=${id}`);
+}
 
 /* ---------- home ---------- */
 async function loadHome() {
@@ -1199,6 +1277,7 @@ async function loadHome() {
   ];
   $("#home-stats").innerHTML = stats.map(([label, num]) =>
     `<div class="stat"><div class="stat-num">${esc(num)}</div><div class="stat-label">${esc(label)}</div></div>`).join("");
+  loadReadingStats();
   $("#home-empty").hidden = !!total;
   const reading = books.filter((b) => (b.progress_pct ?? 0) > 0 && b.progress_pct < 100);
   $("#home-reading-sec").hidden = !reading.length;
@@ -1217,6 +1296,28 @@ async function loadHome() {
     line.textContent = parts.join(" · ");
     line.hidden = !parts.length;
   } catch { line.hidden = true; }
+}
+
+async function loadReadingStats() {
+  const box = $("#home-reading-stats");
+  let s;
+  try { s = await api("/api/stats"); } catch { box.hidden = true; return; }
+  const hasData = s.minutes_total > 0 || s.finished_year > 0;
+  box.hidden = !hasData;
+  if (!hasData) return;
+  const max = Math.max(...s.days.map((d) => d.minutes), 1);
+  const bars = s.days.map((d) =>
+    `<div class="stat-bar" style="height:${Math.max(4, Math.round((d.minutes / max) * 100))}%" title="${esc(d.date)}: ${d.minutes} min (est.)"></div>`).join("");
+  const nums = [
+    [`${s.minutes_month}`, "min this month (est.)"],
+    [`${s.streak_days}`, s.streak_days === 1 ? "day streak" : "day streaks"],
+    [`${s.finished_year}`, s.finished_year === 1 ? "book finished" : "books finished"],
+  ].map(([n, l]) => `<div class="stat"><div class="stat-num">${esc(n)}</div><div class="stat-label">${esc(l)}</div></div>`).join("");
+  const top = s.top_books.length
+    ? `<div class="stat-top">${s.top_books.map((b) =>
+        `<div class="stat-top-row"><span class="stat-top-title">${esc(b.title)}</span><span class="stat-top-min">${b.minutes} min</span></div>`).join("")}</div>`
+    : "";
+  box.innerHTML = `<div class="stats">${nums}</div><div class="stat-bars" role="img" aria-label="Reading minutes, last 30 days">${bars}</div>${top}`;
 }
 
 /* ---------- boot ---------- */
@@ -1245,7 +1346,11 @@ async function boot() {
     loadCollections();
     show("home");
     refreshQueue();  // badge + resume polling if jobs are active
-  } catch { /* 401 handled in api() */ }
+  } catch (e) {
+    // offline: token present → show the cached shelf anyway; shell + books +
+    // covers come from the SW cache. 401 is handled in api() (logout+reload).
+    if (e.status !== 401) { show("home"); }
+  }
 }
 $("#logout-btn").onclick = logout;
 boot();

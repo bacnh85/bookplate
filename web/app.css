@@ -611,3 +611,41 @@ body[data-theme="night"] {
   border-radius: 0 var(--r-sm) var(--r-sm) 0;
   padding: 8px 12px; margin: 12px 0;
 }
+
+/* ---------- Home: reading stats (CSS-only bar strip, no chart lib) ---------- */
+#home-reading-stats { margin-top: 12px; }
+.stat-bars {
+  display: flex; align-items: flex-end; gap: 2px;
+  height: 48px; margin: 8px 0 12px;
+}
+.stat-bar { flex: 1; background: var(--accent); opacity: .75; border-radius: 1px 1px 0 0; min-height: 2px; }
+.stat-top { display: flex; flex-direction: column; gap: 4px; }
+.stat-top-row { display: flex; justify-content: space-between; gap: 12px; font-size: var(--fs-sm); }
+.stat-top-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-top-min { color: var(--ink-soft); font-variant-numeric: tabular-nums; flex: none; }
+@media (prefers-reduced-motion: reduce) { .stat-bar { transition: none; } }
+
+/* ---------- read status + rating ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.chip {
+  border: 1px solid var(--line); background: var(--card); color: var(--ink-soft);
+  font: inherit; font-size: var(--fs-sm); padding: 4px 12px; border-radius: 999px; cursor: pointer;
+}
+.chip:hover { color: var(--ink); }
+.chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chip:disabled { opacity: .4; cursor: default; }
+.tile-status { color: var(--accent); font-size: var(--fs-sm); flex: none; }
+.tile-rating { color: var(--accent); font-size: var(--fs-sm); flex: none; letter-spacing: -1px; }
+.chip-sep { width: 12px; }
+.series-group h3 { margin: 14px 0 8px; font-family: var(--font-display); }
+.series-group .strip { display: flex; gap: 16px; overflow-x: auto; padding-bottom: 8px; }
+@media (prefers-reduced-motion: reduce) { .chip { transition: none; } }
+
+/* ---------- TTS error toast (no voices / engine failure) ---------- */
+.tts-error {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: 120px; z-index: 20;
+  background: var(--danger); color: var(--accent-ink);
+  padding: 10px 16px; border-radius: var(--r-md); box-shadow: var(--e-md);
+  font-size: var(--fs-sm); cursor: pointer; max-width: min(420px, calc(100vw - 32px));
+}

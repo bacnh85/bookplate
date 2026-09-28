@@ -23,6 +23,7 @@ def blank() -> dict:
         "title": "", "authors": "", "isbn": "", "language": "",
         "categories": "", "description": "", "year": None,
         "cover": None, "cover_ext": None, "sample_text": "",
+        "series": "", "series_index": None,
     }
 
 
@@ -43,6 +44,22 @@ def from_epub(path: Path, meta: dict) -> None:
         if "isbn" in scheme or (v.isdigit() and len(v) in (10, 13)):
             meta["isbn"] = v
             break
+    # series: calibre's OPF meta or EPUB3 belongs-to-collection
+    for _val, m in book.get_metadata("OPF", "meta"):
+        if m.get("name") == "calibre:series" and m.get("content"):
+            meta["series"] = m["content"].strip()
+        if m.get("name") == "calibre:series_index":
+            try:
+                meta["series_index"] = float(m["content"])
+            except (TypeError, ValueError):
+                pass
+        if m.get("property") == "belongs-to-collection" and _val:
+            meta["series"] = str(_val).strip()
+        if m.get("property") == "group-position":
+            try:
+                meta["series_index"] = float(_val)
+            except (TypeError, ValueError):
+                pass
     # cover: <meta name="cover" content="id"> or an image named *cover*
     item = None
     for _name, m in book.get_metadata("OPF", "meta"):
@@ -303,6 +320,13 @@ def from_cbz(path: Path, meta: dict) -> None:
         meta["year"] = int(year) if year.isdigit() else None
     if genres := (info.findtext("Genre") or "").strip():
         meta["categories"] = genres
+    if series := (info.findtext("Series") or "").strip():
+        meta["series"] = html.unescape(series)
+    if number := (info.findtext("Number") or "").strip():
+        try:
+            meta["series_index"] = float(number)
+        except ValueError:
+            pass
 
 
 def from_filename(name: str) -> tuple[str, str]:

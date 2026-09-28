@@ -2,6 +2,7 @@
    through HTTP Range requests — the whole file is never downloaded up front.
    ?reader=1 prefers the server's linearized PDF derivative when present. */
 const $ = (s) => document.querySelector(s);
+let Overlayer = null;  // drawn types for annotations — set when foliate loads (openFoliate)
 const id = new URLSearchParams(location.search).get("id");
 const token = localStorage.getItem("token");
 const headers = { Authorization: `Bearer ${token}` };
@@ -139,6 +140,345 @@ function syncProgress() {  // also flushes on close — server never staler than
     });
 }
 
+/* ---- annotations: highlights, notes, bookmarks ---- */
+const annos = new Map();  // id -> {id, cfi, text, note, color, kind}
+let selTimer = null, selRange = null, selCfi = "", selText = "", selIndex = -1;
+const ANNO_HIDDEN = () => view?.isFixedLayout;  // no text CFIs on fixed layout
+
+function drawAnnotation(e) {  // vendored view asks us HOW to draw; pass its own color through
+  const { draw, annotation } = e.detail;
+  const a = annotation.note != null ? annotation : annosByValue.get(annotation.value);
+  if (a?.kind === "underline" || a?.color === "under") draw(Overlayer.underline, { color: "currentColor" });
+  else draw(Overlayer.highlight, { color: a?.color || "yellow" });
+}
+const annosByValue = new Map();  // cfi -> anno (show-annotation only hands us the value)
+
+async function annoApi(path, opts) {
+  const r = await fetch(path, { headers: { ...headers, "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.status === 204 ? null : r.json();
+}
+
+async function loadAnnotations() {
+  if (ANNO_HIDDEN()) return;
+  for (const a of await annoApi(`/api/books/${id}/annotations`)) {
+    annos.set(a.id, a); annosByValue.set(a.cfi, a);
+    try { await view.addAnnotation({ value: a.cfi, color: a.color, note: a.note }); } catch {}
+  }
+}
+
+function redrawAnnotation(a) {  // color/note edits: remove + re-add so the overlay picks it up
+  view.addAnnotation({ value: a.cfi }, true).catch(() => {});
+  view.addAnnotation({ value: a.cfi, color: a.color, note: a.note }).catch(() => {});
+}
+
+/* selection popover — coordinate mapping across blob iframes is flaky, so this
+   is the plan's fallback: a fixed action pill above the bottom bar (ponytail: position-independent beats iframe rect math) */
+function hideSelPop() { $("#sel-pop").hidden = true; }
+
+function onSelectionChange() {
+  if (ANNO_HIDDEN()) return;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(() => {
+    const sel = getActiveSelection();
+    if (!sel || sel.isCollapsed) { hideSelPop(); return; }
+    const contents = view.renderer.getContents();
+    const entry = contents.find(c => c.doc === sel.anchorNode?.getRootNode?.());
+    if (!entry) { hideSelPop(); return; }
+    try {
+      selCfi = view.getCFI(entry.index, sel.getRangeAt(0));
+      selText = String(sel).slice(0, 2000);
+      selRange = sel.getRangeAt(0);
+      selIndex = entry.index;
+    } catch { hideSelPop(); return; }
+    $("#sel-pop").hidden = false;
+  }, 300);
+}
+
+function getActiveSelection() {  // selection lives inside blob-iframe docs, not the top document
+  for (const { doc } of view.renderer.getContents()) {
+    const sel = doc.getSelection?.();
+    if (sel && !sel.isCollapsed && sel.rangeCount) return sel;
+  }
+  return null;
+}
+
+function onDocSelection() {  // fires on the SECTION doc — iframe selections don't reach the top document
+  if (ANNO_HIDDEN()) return;
+  clearTimeout(selTimer);
+  selTimer = setTimeout(onSelectionChange, 300);
+}
+document.addEventListener("selectionchange", onDocSelection);
+
+$("#sel-highlight").onclick = async () => {
+  if (!selCfi) return;
+  const a = await annoApi(`/api/books/${id}/annotations`, {
+    method: "POST", body: JSON.stringify({ cfi: selCfi, text: selText, kind: "highlight", color: "yellow" }),
+  }).catch(() => null);
+  if (!a) return;
+  annos.set(a.id, a); annosByValue.set(a.cfi, a);
+  view.addAnnotation({ value: a.cfi, color: a.color, note: a.note }).catch(() => {});
+  hideSelPop(); getActiveSelection()?.removeAllRanges?.();
+};
+$("#sel-note").onclick = async () => {
+  if (!selCfi) return;
+  const note = prompt("Note:");
+  if (note == null) return;
+  const a = await annoApi(`/api/books/${id}/annotations`, {
+    method: "POST", body: JSON.stringify({ cfi: selCfi, text: selText, note, kind: "highlight", color: "yellow" }),
+  }).catch(() => null);
+  if (!a) return;
+  annos.set(a.id, a); annosByValue.set(a.cfi, a);
+  view.addAnnotation({ value: a.cfi, color: a.color, note: a.note }).catch(() => {});
+  hideSelPop(); getActiveSelection()?.removeAllRanges?.();
+};
+
+/* tap an existing highlight -> manage it */
+function onShowAnnotation(e) {
+  const a = annosByValue.get(e.detail.value);
+  if (!a) return;
+  const action = prompt(`Note: ${a.note || "(none)"}\n\nType a new note, "del" to delete, empty to close:`, a.note || "");
+  if (action == null) return;
+  if (action === "del") {
+    annoApi(`/api/annotations/${a.id}`, { method: "DELETE" }).catch(() => {});
+    view.addAnnotation({ value: a.cfi }, true).catch(() => {});
+    annos.delete(a.id); annosByValue.delete(a.cfi);
+  } else if (action !== a.note) {
+    annoApi(`/api/annotations/${a.id}`, { method: "PATCH", body: JSON.stringify({ note: action }) }).catch(() => {});
+    a.note = action; redrawAnnotation(a);
+  }
+}
+
+/* bookmarks: current position only — works for PDFs too if its fake CFI round-trips */
+async function toggleBookmark() {
+  const cfi = view?.lastLocation?.cfi;
+  if (!cfi) return;
+  const existing = [...annos.values()].find(a => a.kind === "bookmark" && a.cfi === cfi);
+  if (existing) {
+    annoApi(`/api/annotations/${existing.id}`, { method: "DELETE" }).catch(() => {});
+    annos.delete(existing.id); annosByValue.delete(existing.cfi);
+    $("#btn-bookmark").classList.remove("active");
+  } else {
+    const a = await annoApi(`/api/books/${id}/annotations`, {
+      method: "POST", body: JSON.stringify({ cfi, kind: "bookmark" }),
+    }).catch(() => null);
+    if (!a) return;
+    annos.set(a.id, a); annosByValue.set(a.cfi, a);
+    $("#btn-bookmark").classList.add("active");
+  }
+}
+$("#btn-bookmark").onclick = toggleBookmark;
+
+function syncBookmarkBtn() {
+  const cfi = view?.lastLocation?.cfi;
+  const on = cfi && [...annos.values()].some(a => a.kind === "bookmark" && a.cfi === cfi);
+  $("#btn-bookmark").classList.toggle("active", !!on);
+}
+
+/* annotation list popover */
+function renderAnnoList() {
+  const list = $("#anno-list");
+  list.innerHTML = "";
+  const items = [...annos.values()].sort((a, b) => a.id - b.id);
+  $("#anno-export").hidden = !items.length;
+  if (!items.length) { list.append(Object.assign(document.createElement("div"), { className: "anno-empty", textContent: "No highlights yet." })); return; }
+  for (const a of items) {
+    const row = document.createElement("div");
+    row.className = "anno-row";
+    row.textContent = a.kind === "bookmark" ? "🔖 Bookmark" : (a.text || a.note || "Highlight");
+    if (a.note && a.text) row.textContent = `${a.text.slice(0, 60)} — ${a.note.slice(0, 60)}`;
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "anno-del"; del.textContent = "×"; del.setAttribute("aria-label", "Delete");
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      await annoApi(`/api/annotations/${a.id}`, { method: "DELETE" }).catch(() => {});
+      annos.delete(a.id); annosByValue.delete(a.cfi);
+      view.addAnnotation({ value: a.cfi }, true).catch(() => {});
+      renderAnnoList(); syncBookmarkBtn();
+    };
+    row.append(del);
+    row.onclick = () => { view.goTo(a.cfi).catch(() => {}); $("#anno-panel").hidden = true; };
+    list.append(row);
+  }
+}
+$("#btn-anno").onclick = () => { renderAnnoList(); $("#anno-panel").hidden = !$("#anno-panel").hidden; };
+$("#anno-close").onclick = () => { $("#anno-panel").hidden = true; };
+$("#anno-export").onclick = () => open(`/api/annotations/export.md?book_id=${id}`, "_blank");
+
+/* ---- in-book search (foliate view.search; reflow formats) ---- */
+let searchIter = null;
+const searchEsc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function closeSearch() {
+  searchIter?.return?.().catch?.(() => {});
+  searchIter = null;
+  view?.clearSearch();
+  $("#search-panel").hidden = true;
+  $("#search-results").innerHTML = "";
+  $("#search-input").value = "";
+  $("#search-status").textContent = "";
+}
+
+async function runSearch() {
+  const q = $("#search-input").value.trim();
+  if (!q || !view) return;
+  searchIter?.return?.().catch?.(() => {});  // a previous run may still be iterating
+  view.clearSearch();
+  $("#search-results").innerHTML = "";
+  $("#search-status").textContent = "Searching…";
+  const results = $("#search-results");
+  const addResult = (label, sub) => {
+    const row = document.createElement("button");
+    row.type = "button"; row.className = "search-row";
+    row.innerHTML = (label ? `<span class="search-label">${searchEsc(label)}</span>` : "") +
+      `<span class="search-excerpt">${sub}</span>`;
+    return row;
+  };
+  let count = 0;
+  const iter = searchIter = view.search({ query: q, draw: Overlayer.highlight, drawOptions: { color: "orange" } });
+  try {
+    for await (const result of iter) {
+      if (searchIter !== iter) return;  // closed / superseded mid-search
+      if (result === "done") { $("#search-status").textContent = `${count} result${count === 1 ? "" : "s"}`; break; }
+      if (result.progress != null) { $("#search-status").textContent = `Searching… ${Math.round(result.progress * 100)}%`; continue; }
+      const sectionLabel = result.label || "";
+      for (const sub of result.subitems) {
+        count++;
+        const row = addResult(sectionLabel && count === 1 ? sectionLabel : "",
+          `${searchEsc(sub.excerpt.pre)}<mark>${searchEsc(sub.excerpt.match)}</mark>${searchEsc(sub.excerpt.post)}`);
+        row.onclick = () => { view.goTo(sub.cfi).catch(() => {}); };
+        results.append(row);
+      }
+    }
+  } catch { $("#search-status").textContent = "Search failed"; }
+  if (searchIter === iter) searchIter = null;
+}
+
+$("#btn-search").onclick = () => {
+  const panel = $("#search-panel");
+  if (panel.hidden) { panel.hidden = false; $("#search-input").focus(); }
+  else closeSearch();
+};
+$("#search-close").onclick = closeSearch;
+$("#search-input").onkeydown = (e) => {
+  if (e.key === "Enter") runSearch();
+  if (e.key === "Escape") closeSearch();
+};
+$("#search-go").onclick = runSearch;
+
+/* ---- read aloud (TTS, reflow formats; speak per sentence fragment) ---- */
+let tts = null, ttsOn = false, ttsVoice = null;
+// Chrome loads voices asynchronously — prime them on first user gesture
+speechSynthesis.onvoiceschanged = () => { ttsVoice = null; };
+
+function ttsStop() {
+  speechSynthesis.cancel();
+  tts = null; ttsOn = false;
+  clearTimeout(speakSSML.watchdog);
+  try {
+    const { overlayer } = view.renderer.getContents()[0];
+    overlayer?.remove("tts-current");
+  } catch {}
+  $("#btn-tts").textContent = "▶";
+  $("#btn-tts").setAttribute("aria-label", "Read aloud");
+  $("#btn-tts-stop").hidden = true;
+}
+
+function ttsHighlight(range) {  // sentence-level outline via the section overlayer
+  try {
+    const { overlayer } = view.renderer.getContents()[0];
+    if (!overlayer) return;
+    overlayer.remove("tts-current");
+    overlayer.add("tts-current", range, Overlayer.outline, { color: getComputedStyle(document.body).getPropertyValue("--accent").trim() || "#7C2D2D" });
+  } catch {}
+}
+
+function ttsSpeak() {  // speak from the current fragment; onend advances
+  if (!ttsOn) return;
+  speakSSML(tts.start());
+}
+
+function speakSSML(ssml) {
+  if (!ttsOn || !ssml) return;  // section done — onend chain advances the book
+  const text = new DOMParser().parseFromString(ssml, "application/xml")
+    .documentElement.textContent.replace(/\s+/g, " ").trim();
+  if (!text) { ttsUtterNext(); return; }
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = +(localStorage.getItem("reader-tts-rate") || 1);
+  // Chrome populates getVoices() async — speak voiceless (platform default)
+  // rather than blocking on an empty list; only hard-fail if the engine
+  // itself errors (see onerror).
+  if (!ttsVoice) {
+    const voices = speechSynthesis.getVoices();
+    ttsVoice = voices.find(v => v.default) || voices[0] || null;
+  }
+  if (ttsVoice) u.voice = ttsVoice;
+  u.onend = () => ttsUtterNext();
+  u.onerror = (e) => {
+    if (e.error === "interrupted" || e.error === "canceled") return;  // our own stop
+    ttsShowError(`Speech failed (${e.error}). Try another browser if it repeats.`);
+  };
+  // some engines silently no-op (no voices, blocked audio) with NO event fired:
+  // if neither speaking nor pending 5s after speak(), nothing will ever sound
+  clearTimeout(speakSSML.watchdog);
+  speakSSML.watchdog = setTimeout(() => {
+    if (ttsOn && !speechSynthesis.speaking && !speechSynthesis.pending)
+      ttsShowError("Speech isn't starting — this browser has no working TTS engine. Try Safari or Chrome with system voices installed.");
+  }, 5000);
+  speechSynthesis.speak(u);
+}
+
+function ttsShowError(msg) {
+  ttsStop();
+  clearTimeout(speakSSML.watchdog);
+  const el = document.createElement("div");
+  el.className = "tts-error";
+  el.textContent = msg;
+  el.onclick = () => el.remove();
+  $("#viewer").append(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
+function ttsUtterNext() {
+  if (!ttsOn || !tts) return;
+  clearTimeout(speakSSML.watchdog);  // section advance may take >5s — not a failure
+  const paused = speechSynthesis.paused;
+  const ssml = tts.next(paused);
+  if (!ssml) {  // fragment list done — try the next section
+    if (view.renderer.scrolled || true) {  // paginated & scrolled both auto-advance
+      view.next().then(() => ttsReinit()).catch(() => ttsStop());
+    }
+    return;
+  }
+  if (paused) speechSynthesis.resume();
+  speakSSML(ssml);
+}
+
+async function ttsReinit() {  // rebuild for the section that just opened
+  if (!ttsOn || !view) return;
+  await new Promise(r => setTimeout(r, 300));  // let the renderer settle
+  await view.initTTS("sentence", ttsHighlight).catch(() => {});
+  if (tts) { const ssml = tts.start(); speakSSML(ssml); }
+}
+
+$("#btn-tts").onclick = async () => {
+  if (ttsOn) { speechSynthesis.pause(); ttsOn = false; return; }  // pause keeps the fragment position
+  if (speechSynthesis.paused && tts) { speechSynthesis.resume(); ttsOn = true; return; }
+  if (view.isFixedLayout) return;
+  speechSynthesis.cancel();  // flush any stale queue before speaking
+  // speak a zero-length utterance inside the click's user-activation window:
+  // iOS Safari requires activation for speechSynthesis, and our await chain
+  // (initTTS import + settle) loses it before the first real speak()
+  ttsOn = true;
+  $("#btn-tts").textContent = "⏸";
+  $("#btn-tts").setAttribute("aria-label", "Pause reading");
+  $("#btn-tts-stop").hidden = false;
+  try { speechSynthesis.speak(new SpeechSynthesisUtterance(" ")); } catch {}
+  await ttsReinit();
+};
+
+$("#btn-tts-stop").onclick = ttsStop;
+
 /* ---- seek slider ---- */
 const seek = $("#seek");
 let seeking = false, seekTimer = null;
@@ -154,6 +494,7 @@ async function openFoliate(file) {
   // ?v=3 defeats any stale-cached foliate (Cloudflare pins static JS for 1y if
   // Browser Cache TTL misconfigures to override the origin's no-cache)
   await import("/foliate-js/view.js?v=3");  // side-effect: defines <foliate-view>
+  ({ Overlayer } = await import("/foliate-js/overlayer.js?v=3"));
   view = document.createElement("foliate-view");
   $("#viewer").prepend(view);
   await view.open(file);
@@ -161,6 +502,8 @@ async function openFoliate(file) {
   applyLayout();
   $("#zone-left").hidden = $("#zone-center").hidden = $("#zone-right").hidden = false;
   $("#type-wrap").hidden = view.isFixedLayout;  // typography controls are reflow-only
+  $("#btn-search").hidden = view.isFixedLayout;  // search walks section docs — reflow only
+  $("#btn-tts").hidden = $("#btn-tts-stop").hidden = view.isFixedLayout;  // TTS reads text — reflow only
 
   // TOC (EPUB nav + PDF outline both land here)
   const toc = view.book.toc || [];
@@ -206,7 +549,22 @@ async function openFoliate(file) {
     $("#loading")?.remove();
     if (view.isFixedLayout)  // warm the next page's byte ranges + render cache
       view.book.sections[section.current + 1]?.load?.().catch(() => {});
+    syncBookmarkBtn();
   });
+
+  // annotation wiring: draw HOW (colors), re-draw when a section's overlay is
+  // (re)created (annotations only render in the open section), tap -> manage
+  view.addEventListener("draw-annotation", drawAnnotation);
+  view.addEventListener("create-overlay", (e) => {
+    for (const a of annos.values())
+      if (a.kind !== "bookmark") view.addAnnotation({ value: a.cfi, color: a.color, note: a.note }).catch(() => {});
+  });
+  view.addEventListener("show-annotation", onShowAnnotation);
+  view.addEventListener("load", ({ detail }) => {  // per-section selection watching
+    detail.doc.addEventListener("selectionchange", onDocSelection);
+  });
+
+  await loadAnnotations();
 
   // resume at the NEWER position (server syncs across devices, local wins when
   // the last sync failed); offset re-anchors the local clock to the server's

@@ -3,14 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Bookplate — your ebook library</title>
-<link rel="stylesheet" href="/app.css?v=5">
+<link rel="stylesheet" href="/app.css?v=10">
 </head>
 <body>
 <script>/* DIAG remove */ window.CLICKLOG = [];
   addEventListener("click", e => window.CLICKLOG.push({x: e.clientX, y: e.clientY,
     target: (e.target.id || e.target.tagName), trusted: e.isTrusted}), true);
   </script>
+<script>
+if ("serviceWorker" in navigator) addEventListener("load", () =>
+  navigator.serviceWorker.register("/sw.js").catch(() => {}));
+</script>
   <script>/* theme before first paint — no flash of the wrong palette (app.js refines).
   Same resolution + validation as app.js readTheme(); storage access guarded. */
   (() => { let t = "auto";
@@ -95,6 +100,7 @@
         <div id="home-view">
           <div class="view-head"><h2>Home</h2></div>
           <div class="stats" id="home-stats"></div>
+          <div id="home-reading-stats" hidden></div>
           <p class="result-sub" id="home-queue-line" hidden></p>
           <section class="home-section" id="home-reading-sec" hidden>
             <h3>Continue reading</h3>
@@ -130,7 +136,9 @@
               <button class="btn-ghost" id="collection-delete" type="button">Delete</button>
             </span>
           </div>
+          <div class="chips" id="meta-chips"></div>
           <div class="grid" id="grid"></div>
+          <div id="series-groups" hidden></div>
           <div class="empty" id="shelf-empty" hidden></div>
         </div>
 
@@ -378,6 +386,6 @@
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=14"></script>
+<script type="module" src="/app.js?v=25"></script>
 </body>
 </html>

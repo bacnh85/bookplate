@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS books(
   categories TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   year INTEGER,
+  series TEXT,
+  series_index REAL,
   cover_ext TEXT,
   source TEXT NOT NULL DEFAULT 'upload',
   added_by INTEGER REFERENCES users(id),
@@ -94,6 +96,37 @@ CREATE TABLE IF NOT EXISTS collection_books(
   book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
   added_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (collection_id, book_id)
+);
+-- highlights, underlines, bookmarks (per user per book; CFI from foliate-js)
+CREATE TABLE IF NOT EXISTS annotations(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  cfi TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT 'yellow',
+  kind TEXT NOT NULL DEFAULT 'highlight',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+-- per-user shelf metadata: read status + rating (nothing = unset)
+CREATE TABLE IF NOT EXISTS user_book_meta(
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  status TEXT CHECK(status IN ('want','reading','read','dnf')),
+  rating INTEGER CHECK(rating BETWEEN 0 AND 5),
+  updated_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, book_id)
+);
+-- estimated reading time: one row per day-of-reading increment (see put_progress)
+CREATE TABLE IF NOT EXISTS reading_sessions(
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+  ts TEXT DEFAULT (datetime('now')),
+  pct_from INTEGER,
+  pct_to INTEGER,
+  minutes REAL
 );
 -- per-user reading position (epub CFI + percent); server-synced from the reader
 CREATE TABLE IF NOT EXISTS reading_progress(
@@ -202,6 +235,10 @@ def init() -> None:
         bcols = {r["name"] for r in c.execute("PRAGMA table_info(books)")}
         if "cover_color" not in bcols:
             c.execute("ALTER TABLE books ADD COLUMN cover_color TEXT")
+        if "series" not in bcols:
+            c.execute("ALTER TABLE books ADD COLUMN series TEXT")
+        if "series_index" not in bcols:
+            c.execute("ALTER TABLE books ADD COLUMN series_index REAL")
         # at-least-one-admin invariant: an upgraded DB (everyone role='user') with
         # registration defaulting to 'approval' would deadlock — nobody could approve
         # or reach /api/admin/*. Promote the earliest ACTIVE account. (Debris

@@ -28,6 +28,14 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   percent) to the server as you read; tiles show your place (3% / Finished / NEW),
   resume works across devices and browsers (newest position wins), and Home's
   Continue reading follows you anywhere.
+- **Reading stats**: reading time is estimated from progress syncs (forward
+  movement only, capped so idle tabs don't inflate it — labeled "est."), and
+  Home shows minutes this month, day streak, books finished this year, a
+  30-day bar strip and your most-read books.
+- **Read status & ratings**: mark any book Want to read / Reading / Read / DNF
+  (chip filters above the shelf, `⋯` menu, auto-set as you read — never
+  overriding your explicit choice) and rate 1–5 ★; tiles show the status glyph
+  and stars.
 - **My Collections**: create your own collections in the sidebar and file any
   book on your shelf — including ones shared with you — into them.
 - **Ask AI** (optional): a chat that knows your shelf. Ask it to find books
@@ -48,6 +56,10 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
   the hint …") or use the API — re-runs the whole extraction/enrichment chain on
   an existing book, updates search instantly, and re-fetches the cover
   (embedded art → PDF page-1 → Google/OL → deterministic placeholder last resort).
+- **Series**: series name + number are read on upload (calibre OPF meta,
+  EPUB3 belongs-to-collection, CBZ ComicInfo) and editable per book (API PATCH
+  or the AI "correct book fields"); the Library's Series chip groups the shelf
+  by series in reading order.
 - **Content-addressed storage** (SHA-256): re-uploading the same file dedups
   instantly; a *logical* duplicate (same normalized title + author, different file)
   is flagged so you can compare scans.
@@ -60,6 +72,14 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 **Reading**
 - **In-browser reader** (vendored foliate-js): paginated EPUB/MOBI/AZW/AZW3/PRC/FB2,
   current position remembered per user, mobile-friendly.
+- **Highlights, notes & bookmarks**: select text in the reader to highlight or
+  attach a note (yellow/blue/green/red highlights and underlines, per-user and
+  synced to the server); tap a highlight to edit or delete it; the 🔖 button
+  bookmarks the current page; the ✎ panel lists everything with jump-to and
+  one-click **Markdown export** (per book or from the shelf's `⋯` menu).
+- **In-book search**: the 🔍 button searches the whole book (EPUB/MOBI/FB2),
+  with progress, highlighted excerpts, click-to-jump, and drawn match marks
+  that clear when you close the panel.
 - **Download** any book for offline reading; CBZ/PDF open natively where supported.
 
 **Book Store (integrations)**
@@ -120,6 +140,10 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 **Ops**
 - Single container, one volume (`/app/data`) holds everything — DB, books, covers.
+- **PWA / offline**: installable (manifest + icons); a service worker caches
+  the app shell, and books you've opened stay readable offline — pages stream
+  from the cached file via synthesized HTTP Range responses, and the shelf
+  loads from cache when the server is unreachable.
 - Multi-arch image (amd64 + arm64), checksum-verified `zlib` CLI baked in.
 - OPDS 1.2 catalog for iOS reader apps (basic auth).
 - No build step: vanilla-JS frontend, vendored foliate-js.
@@ -312,6 +336,10 @@ Add keys via **Admin → Settings** — no restart needed.
 node scripts/test_ai_ui.mjs               # AI action cards (behavioral, no browser)
 .venv/bin/python scripts/test_zlib.py     # z-lib adapter + EAPI probe (offline)
 .venv/bin/python scripts/test_annas.py    # Anna's Archive adapter (offline)
+.venv/bin/python scripts/test_annotations.py  # highlights/notes/bookmarks API (offline)
+.venv/bin/python scripts/test_stats.py    # reading-stats funnel + aggregation (offline)
+.venv/bin/python scripts/test_meta.py     # read status + ratings API (offline)
+.venv/bin/python scripts/test_series.py   # series extraction + grouping (offline)
 ```
 
 The e2e suite runs two ways: on a **fresh database** (CI) it signs in with the
