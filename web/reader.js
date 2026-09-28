@@ -35,6 +35,82 @@ const themeColors = () => {
   const css = getComputedStyle(document.body);
   return ["paper", "ink", "ink-soft", "accent"].map(v => css.getPropertyValue(`--${v}`).trim());
 };
+/* ---- platform detection: iOS browsers lie differently (iOS 26 WebKit reports
+   env(safe-area-inset-*) as 0 with the floating chrome overlaying the page) —
+   adapt insets + viewport height per platform ---- */
+const ua = navigator.userAgent;
+const iOS = /iP(hone|ad|od)/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1); // incl. iPadOS
+const browser = /CriOS/.test(ua) ? "chrome-ios" : /FxiOS/.test(ua) ? "firefox-ios"
+  : /EdgiOS/.test(ua) ? "edge-ios" : iOS ? "safari-ios" : /Android/.test(ua) ? "chrome-android" : "desktop";
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+document.body.dataset.os = iOS ? "ios" : /Android/.test(ua) ? "android" : "desktop";
+document.body.dataset.browser = browser;
+if (standalone) document.body.dataset.standalone = "";
+
+/* ---- safe-area resolution: probe env() and fall back when it reads 0 ---- */
+function probeSafeInset(side) {  // "top" | "bottom" — computed px value of env()
+  const probe = document.createElement("div");
+  probe.style.cssText = `position:absolute;visibility:hidden;padding-${side}:env(safe-area-inset-${side},0px)`;
+  document.body.appendChild(probe);
+  const v = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+  probe.remove();
+  return v;
+}
+function resolveSafeInsets() {
+  const root = document.documentElement.style;
+  root.setProperty("--safe-top", `max(env(safe-area-inset-top, 0px), ${probeSafeInset("top")}px)`);
+  root.setProperty("--safe-bottom", `max(env(safe-area-inset-bottom, 0px), ${probeSafeInset("bottom")}px)`);
+  if (iOS && !standalone && probeSafeInset("top") === 0) {
+    // device-keyed fallbacks, portrait CSS px — iOS 26 keeps env() at 0 (user device:
+    // iPhone Safari 26, screenshot-verified)
+    const h = Math.round(screen.height);  // portrait CSS px
+    const top = h <= 736 ? 20 : h >= 852 ? 59 : 48;  // SE/8 : Dynamic Island : notch era
+    root.setProperty("--safe-top", `max(env(safe-area-inset-top, 0px), ${top}px)`);
+    root.setProperty("--safe-bottom", `max(env(safe-area-inset-bottom, 0px), 21px)`);
+  }
+}
+resolveSafeInsets();
+addEventListener("orientationchange", resolveSafeInsets);
+
+/* ---- real visible height (iOS 26 floating chrome overlays the page and
+   innerHeight/100dvh report the full screen) ---- */
+let appHFocusGuard = () => document.activeElement?.closest("input, select, textarea");
+let appHTimer = null;
+function applyAppHeight() {
+  if (appHFocusGuard()) return;  // keyboard is open — vv shrinks for it, don't shrink the reader
+  let h = Math.round(visualViewport.height);
+  // iOS 26 floating chrome sometimes reports the FULL screen height (screenshot-verified:
+  // bottom bar landed behind the address pill) — clamp only that generation: iOS <= 25
+  // reports real collapsed-chrome vv (clamping would over-shrink ~60px), iPad desktop-mode
+  // UA reports OS 10_x, and undefined must skip (NaN === 26 is false).
+  const iOSVer = parseInt((ua.match(/OS (\d+)_/) || [])[1], 10);
+  if (iOS && !standalone && iOSVer === 26) h = Math.min(h, Math.round(screen.height) - 110);
+  if (h > 0) document.documentElement.style.setProperty("--app-h", `${h}px`);
+}
+visualViewport?.addEventListener("resize", () => {
+  clearTimeout(appHTimer);
+  appHTimer = setTimeout(applyAppHeight, 150);  // toolbar collapse fires several resizes
+});
+applyAppHeight();
+
+/* ---- theme-tinted browser chrome: iOS 26 floating chrome picks up theme-color ---- */
+function syncThemeColor() {
+  const meta = document.querySelector('#meta-theme');
+  if (meta) meta.content = getComputedStyle(document.body).getPropertyValue("--paper").trim();
+}
+syncThemeColor();
+
+/* on-device diagnosis: /reader.html?id=N&debug=platform (LAN origin bypasses CF) */
+if (new URLSearchParams(location.search).get("debug") === "platform") {
+  const chip = document.createElement("div");
+  const vv = Math.round(visualViewport?.height || 0);
+  const envTop = getComputedStyle(document.documentElement).getPropertyValue("--safe-top");
+  chip.style.cssText = "position:fixed;right:8px;top:8px;z-index:99;padding:4px 8px;" +
+    "font:11px/1.4 monospace;background:rgba(0,0,0,.75);color:#fff;border-radius:6px;pointer-events:none";
+  chip.textContent = `${document.body.dataset.os} · ${browser} · ${standalone ? "standalone" : "browser"} · vv=${vv} ih=${innerHeight} safe-top=${envTop}`;
+  document.body.appendChild(chip);
+}
+
 const FONTS = {
   literata: "'Literata', Georgia, serif",
   georgia: "Georgia, 'Times New Roman', serif",
@@ -78,6 +154,7 @@ function applyStyles() {
            ${justify ? `text-align: justify !important; -webkit-hyphens: auto !important; hyphens: auto !important;` : "text-align: left !important;"} }
     p + p { ${justify ? "text-indent: 1.5em !important;" : ""} }
     a { color: ${accent} !important; }
+    html { -webkit-text-size-adjust: 100%; }
     ::selection { background: ${accent}; color: ${bg}; }
   `);
 }
@@ -662,6 +739,7 @@ $("#theme-cycle").onclick = (e) => {
   put("theme", next);
   e.target.textContent = themeLabel(next);
   applySettings();
+  syncThemeColor();
 };
 
 $("#type-btn").onclick = () => { $("#type-panel").hidden = !$("#type-panel").hidden; };

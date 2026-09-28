@@ -270,5 +270,49 @@ class TestDocsHtml(unittest.TestCase):
         self.assertIn('fetch("/docs.html")', app)
 
 
+class TestPlatform(unittest.TestCase):
+    """iOS platform adaptation: iOS 26 Safari reports env(safe-area-inset-*) as 0
+    and iOS 26 WebKit floats browser chrome OVER the page — the reader must
+    detect the platform and adapt insets + viewport height."""
+
+    READER_HTML = (WEB / "reader.html").read_text()
+
+    def test_viewport_cover(self):
+        self.assertIn("viewport-fit=cover", self.READER_HTML)
+
+    def test_theme_color_meta_and_status_bar_style(self):
+        self.assertIn('name="theme-color" id="meta-theme"', self.READER_HTML)
+        self.assertIn('apple-mobile-web-app-status-bar-style', self.READER_HTML)
+
+    def test_safe_area_vars_declared(self):
+        self.assertIn("--safe-top: env(safe-area-inset-top, 0px)", self.READER_HTML)
+        self.assertIn("--safe-bottom: env(safe-area-inset-bottom, 0px)", self.READER_HTML)
+        self.assertIn("calc(8px + var(--safe-top))", self.READER_HTML)
+        self.assertIn("calc(10px + var(--safe-bottom))", self.READER_HTML)
+
+    def test_app_height_var(self):
+        self.assertIn("height: var(--app-h, 100dvh)", self.READER_HTML)
+
+    def test_platform_detection_in_reader_js(self):
+        src = READER.read_text()
+        for needle in ["CriOS", "FxiOS", "EdgiOS", "maxTouchPoints > 1",
+                       "display-mode: standalone", "visualViewport",
+                       "probeSafeInset", "syncThemeColor"]:
+            self.assertIn(needle, src, f"reader.js lost platform handling: {needle}")
+
+    def test_sw_version_bumped(self):
+        self.assertIn('const VERSION = "bookplate-v3";', (WEB / "sw.js").read_text())
+
+    def test_reader_js_stamp_bumped(self):
+        self.assertIn("/reader.js?v=17", self.READER_HTML)
+
+    def test_app_height_clamped_on_ios(self):
+        # iOS 26 floating chrome sometimes reports the FULL screen height —
+        # the bottom bar must be clamped out of the pill zone (iOS 26 only:
+        # older iOS reports real collapsed-chrome vv, undefined must skip)
+        self.assertIn("Math.min(h, Math.round(screen.height) - 110)", READER.read_text())
+        self.assertIn("iOSVer === 26", READER.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

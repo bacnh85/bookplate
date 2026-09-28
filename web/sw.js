@@ -4,7 +4,7 @@
    Book files: cached whole on first full-body fetch; Range requests are
    answered by slicing the cached body (206 + Content-Range synthesized).
    Never cached: anything but GET, auth/admin/store endpoints, /api/me. */
-const VERSION = "bookplate-v2";
+const VERSION = "bookplate-v3";
 const SHELL = [
   "/", "/index.html", "/reader.html", "/app.css", "/app.js", "/reader.js",
   "/manifest.webmanifest", "/fonts/Literata-VF.woff2",
