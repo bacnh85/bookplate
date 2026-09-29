@@ -125,6 +125,11 @@ if ("serviceWorker" in navigator) addEventListener("load", () =>
           </div>
           <div class="error-line" id="zlib-error"></div>
           <div class="results" id="zlib-results"></div>
+          <div class="admin-pager" id="store-pager" hidden>
+            <button class="btn-ghost" id="store-prev" type="button">←</button>
+            <span id="store-page" class="result-sub"></span>
+            <button class="btn-ghost" id="store-next" type="button">→</button>
+          </div>
         </div>
 
         <div id="library-view" hidden>
@@ -386,6 +391,6 @@ if ("serviceWorker" in navigator) addEventListener("load", () =>
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=25"></script>
+<script type="module" src="/app.js?v=26"></script>
 </body>
 </html>

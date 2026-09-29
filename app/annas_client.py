@@ -266,13 +266,18 @@ class Annas:
             except _Challenge:
                 raise AnnasUnavailable(_guard_hint(self._base()))
 
-    async def search(self, q: str, count: int = 20) -> list[dict]:
-        r = await self._fetch_authed(f"{self._base()}/search?q={quote_plus(q)}")
+    async def search_page(self, q: str, count: int = 20, page: int = 1) -> dict:
+        """One Anna's page: {results, page, total_pages}. total_pages is unknown
+        (the page prints "500+ total"); the caller tells has_more off a full page."""
+        r = await self._fetch_authed(f"{self._base()}/search?q={quote_plus(q)}&page={max(1, page)}")
         if r.status_code != 200:
             raise AnnasUnavailable(f"Anna's Archive search HTTP {r.status_code}")
         rows = [row for row in parse_search_results(r.text, self._base())
                 if not row["extension"] or row["extension"] in _GOOD_FILE_EXTS]
-        return rows[:count]
+        return {"results": rows[:count], "page": max(1, page), "total_pages": None}
+
+    async def search(self, q: str, count: int = 20, page: int = 1) -> list[dict]:
+        return (await self.search_page(q, count, page))["results"]
 
     async def download(self, md5: str, on_progress=None,
                        expected_size: int | None = None) -> tuple[bytes, dict]:

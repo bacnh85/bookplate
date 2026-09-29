@@ -36,11 +36,15 @@ async def lifespan(_app: FastAPI):
         con.execute("UPDATE download_jobs SET status='queued', next_attempt_at=NULL "
                     "WHERE status IN ('downloading','processing')")
     worker = asyncio.create_task(download_worker())
+    poller = asyncio.create_task(_quota_poller())
     # the mounted MCP app's session manager needs its lifespan run explicitly —
     # FastAPI only runs the root app's lifespan, not mounted sub-apps'
     async with mcp.session_manager.run():
         yield
+    poller.cancel()
     worker.cancel()
+    with suppress(asyncio.CancelledError):
+        await poller
     with suppress(asyncio.CancelledError):
         await worker
 
@@ -968,11 +972,12 @@ def send_to_kindle(book_id: int, req: KindleSendReq, user=UserDep):
 # ---------- z-library (env-gated) ----------
 
 @app.get("/api/zlib/search")
-async def zlib_search(q: str, user=UserDep):
+async def zlib_search(q: str, page: int = 1, user=UserDep):
     try:
-        return {"results": await zlib.search(q)}
+        j = await zlib.search_page(q, page=page)
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
+    return {**j, "has_more": j["page"] < (j["total_pages"] or 1)}
 
 
 @app.get("/api/zlib/limits")
@@ -1086,13 +1091,15 @@ def zlib_queue_retry(job_id: int, user=UserDep):
 # ---------- anna's archive (env-gated, member secret key) ----------
 
 @app.get("/api/annas/search")
-async def annas_search(q: str, user=UserDep):
+async def annas_search(q: str, page: int = 1, user=UserDep):
     try:
-        return {"results": await annas.search(q)}
+        # 50 = the natural AA page size; slicing it to 20 would hide 30 rows/page
+        j = await annas.search_page(q, count=50, page=page)
     except AnnasConfigError as e:
         raise HTTPException(400, str(e))  # permanent: missing/rejected key
     except AnnasUnavailable as e:
         raise HTTPException(503, str(e))
+    return {**j, "has_more": len(j["results"]) >= 50}
 
 
 @app.get("/api/annas/queue")
@@ -1410,6 +1417,23 @@ async def _account_limits(a: dict | None = None) -> dict:
         limits = await with_account(a, zlib.limits)
     zlib_accounts.snapshot(a["id"], limits)
     return limits
+
+
+async def _quota_poller():
+    """Keep the pool quota cache warm: probe stale accounts at startup, then
+    every PROFILE_TTL (the cache is in-memory and dies with the process).
+    Legacy (no pool) mode is untouched — /api/zlib/limits live-probes then."""
+    while True:
+        for a in zlib_accounts.enabled_accounts():
+            if zlib_accounts.cached_quota(a["id"]):
+                continue  # fresh within TTL — skip the CLI spawn
+            try:
+                await _account_limits(_account_ctx(a))
+            except ZlibUnavailable as e:
+                zlib_accounts.note_failure(a["id"], str(e))  # surface in admin UI
+            except Exception:
+                pass  # never let one account kill the loop
+        await asyncio.sleep(zlib_accounts.PROFILE_TTL)
 
 
 async def _account_history(page: int, fmt: str, a: dict | None) -> dict:

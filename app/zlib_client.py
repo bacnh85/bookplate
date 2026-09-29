@@ -205,9 +205,12 @@ class Zlib:
         await self._login()
         return await self._run(*args, timeout=timeout)
 
-    async def search(self, q: str, count: int = 20) -> list[dict]:
+    async def search_page(self, q: str, count: int = 20, page: int = 1) -> dict:
+        """One page of search results: {results, page, total_pages}. The store
+        UI pages with these; total_pages is the CLI's own count."""
         await self._ensure_session()
-        rc, out, err = await self._run_authed("search", q, "--json", "-n", str(count), timeout=90)
+        rc, out, err = await self._run_authed(
+            "search", q, "--json", "-n", str(count), "-p", str(max(1, page)), timeout=90)
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library search failed: {(err or out).strip()[:200]}")
         try:
@@ -230,7 +233,12 @@ class Zlib:
         } for b in books[:count]]
         # only formats the reader can open — an unusable extension is hidden
         # rather than queued and stranded (empty = store didn't say: keep it)
-        return [r for r in rows if not r["extension"] or r["extension"] in metadata.EXTS]
+        return {"results": [r for r in rows if not r["extension"] or r["extension"] in metadata.EXTS],
+                "page": parsed.get("page", page),
+                "total_pages": parsed.get("total_pages", 1)}
+
+    async def search(self, q: str, count: int = 20, page: int = 1) -> list[dict]:
+        return (await self.search_page(q, count, page))["results"]
 
     async def limits(self) -> dict:
         await self._ensure_session()

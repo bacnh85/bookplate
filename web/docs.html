@@ -89,13 +89,13 @@ curl -H "Authorization: Bearer bp_YOUR_TOKEN" \
   <table>
     <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
     <tbody>
-      <tr><td><code>GET</code></td><td><code>/api/zlib/search?q=</code></td><td>search Z-Library (pool accounts, configured server-wide)</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/zlib/search?q=&page=</code></td><td>search Z-Library (pool accounts, configured server-wide); returns <code>{results, page, total_pages, has_more}</code></td></tr>
       <tr><td><code>GET</code></td><td><code>/api/zlib/limits</code></td><td>daily quota state (aggregate: <code>{total_remaining, total_allowed, accounts:[…]}</code> when a pool exists)</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/zlib/queue</code></td><td><code>{id, name, authors, cover, extension, size}</code> — queue a download (fields from search results)</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/zlib/queue</code></td><td>queue + job statuses</td></tr>
       <tr><td><code>DELETE</code></td><td><code>/api/zlib/queue/{job_id}</code></td><td>cancel/remove a job</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/zlib/queue/{job_id}/retry</code></td><td>retry a failed job</td></tr>
-      <tr><td><code>GET</code></td><td><code>/api/annas/search?q=</code></td><td>search Anna's Archive</td></tr>
+      <tr><td><code>GET</code></td><td><code>/api/annas/search?q=&page=</code></td><td>search Anna's Archive (50 results per page; same response shape)</td></tr>
       <tr><td><code>POST</code></td><td><code>/api/annas/queue</code></td><td>queue an Anna's Archive download (same body shape)</td></tr>
       <tr><td><code>GET</code></td><td><code>/api/annas/queue</code></td><td>queue + statuses</td></tr>
       <tr><td><code>DELETE</code></td><td><code>/api/annas/queue/{job_id}</code></td><td>cancel/remove</td></tr>

@@ -687,6 +687,7 @@ function setSource(s) {
   applySourceUI(s);
   $("#zlib-error").textContent = "";
   $("#zlib-results").innerHTML = "";
+  $("#store-pager").hidden = true;
   if (s === "zlib") showQuota();
   if ($("#zlib-search").value.trim()) zlibSearch($("#zlib-search").value);
 }
@@ -749,27 +750,48 @@ const quotaText = (l) => (l.total_allowed != null
 
 let zlibTimer;
 let zlibSearchSeq = 0;  // discard stale responses from overlapping searches
+let storePage = 1, storePageSize = 20, storeQuery = "";
 $("#zlib-search").oninput = (e) => {
   clearTimeout(zlibTimer);
   zlibTimer = setTimeout(() => zlibSearch(e.target.value), 400);
 };
-async function zlibSearch(q) {
+async function zlibSearch(q, page = 1) {
   const seq = ++zlibSearchSeq;
   $("#zlib-error").textContent = "";
-  if (!q.trim()) { $("#zlib-results").innerHTML = ""; return; }
   const box = $("#zlib-results");
+  if (!q.trim()) { box.innerHTML = ""; $("#store-pager").hidden = true; return; }
   box.innerHTML = `<div class="skeleton" style="height:84px"></div>`;
   try {
-    const { results } = await api(`${SOURCES[findSource].search}?q=${encodeURIComponent(q)}`);
+    const { results, total_pages, has_more } = await api(
+      `${SOURCES[findSource].search}?q=${encodeURIComponent(q)}&page=${page}`);
     if (seq !== zlibSearchSeq) return;  // a newer search superseded this one
+    storeQuery = q; storePage = page;
+    if (page === 1) storePageSize = results.length || 20;
     box.innerHTML = "";
-    if (!results.length) { box.innerHTML = `<div class="empty">No results.</div>`; return; }
-    results.forEach((r, i) => box.append(resultRow(r, i + 1)));
+    if (!results.length) {
+      box.innerHTML = `<div class="empty">${page > 1 ? "No more results." : "No results."}</div>`;
+    } else {
+      const base = (page - 1) * storePageSize;
+      results.forEach((r, i) => box.append(resultRow(r, base + i + 1)));
+    }
+    renderStorePager(results.length, total_pages, has_more, page);
   } catch (err) {
     box.innerHTML = "";
+    $("#store-pager").hidden = true;
     $("#zlib-error").textContent = err.message;
   }
 }
+
+function renderStorePager(n, totalPages, hasMore, page) {
+  const pager = $("#store-pager");
+  pager.hidden = !n && page <= 1;  // keep the way back when a later page came up empty
+  if (pager.hidden) return;
+  $("#store-prev").disabled = page <= 1;
+  $("#store-next").disabled = !hasMore;
+  $("#store-page").textContent = `page ${page}${totalPages ? ` / ${totalPages}` : ""}`;
+}
+$("#store-prev").onclick = () => { if (storePage > 1) zlibSearch(storeQuery, storePage - 1); };
+$("#store-next").onclick = () => zlibSearch(storeQuery, storePage + 1);
 
 function ratingLine(r) {
   return `★ ${r.rating || "?"}${r.quality ? ` / ${r.quality}` : ""}`;

@@ -236,6 +236,20 @@ class SearchTests(unittest.TestCase):
         self.assertIn("/search?q=", seen["url"])
         self.assertGreaterEqual(len(rows), 10)
 
+    def test_search_page_forwards_page_and_shapes_dict(self):
+        seen = {}
+
+        async def fake_authed(self, url):
+            seen["url"] = url
+            return resp(200, text=FIXTURE.read_text())
+        with mock.patch.object(Annas, "_fetch_authed", fake_authed):
+            j = run(self.annas.search_page("q", count=50, page=3))
+        self.assertIn("&page=3", seen["url"])
+        self.assertEqual(j["page"], 3)
+        self.assertIsNone(j["total_pages"])
+        self.assertLessEqual(len(j["results"]), 50)
+        # full AA pages yield 50 cards, so has_more is the caller's len>=50 check
+
     def test_search_raises_on_non_200(self):
         async def fake_authed(self, url):
             return resp(500, text="boom")
@@ -523,13 +537,13 @@ class MainWiringTests(unittest.TestCase):
         self.assertEqual((row["status"], row["attempts"], row["error"]), ("queued", 0, ""))
 
     def test_search_endpoint_maps_config_vs_transient(self):
-        with mock.patch.object(self.main.annas, "search",
+        with mock.patch.object(self.main.annas, "search_page",
                                side_effect=AnnasConfigError("no key set")):
             with self.assertRaises(self.main.HTTPException) as cm:
                 run(self.main.annas_search(q="x", user=self.user))
         self.assertEqual(cm.exception.status_code, 400)
         self.assertIn("no key", cm.exception.detail)
-        with mock.patch.object(self.main.annas, "search",
+        with mock.patch.object(self.main.annas, "search_page",
                                side_effect=AnnasUnavailable("bot check")):
             with self.assertRaises(self.main.HTTPException) as cm:
                 run(self.main.annas_search(q="x", user=self.user))

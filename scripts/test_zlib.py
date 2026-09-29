@@ -157,6 +157,22 @@ class ZlibTests(unittest.TestCase):
         self.assertIn("-n", calls[0])
         self.assertEqual(calls[0][calls[0].index("-n") + 1], "5")
 
+    def test_search_page_forwards_page_and_surfaces_total_pages(self):
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            calls.append(args)
+            return 0, json.dumps({"books": [{"id": "1:ab", "name": "T"}],
+                                  "page": 3, "total_pages": 100}), ""
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            j = run(Zlib().search_page("q", page=3))
+        self.assertIn("-p", calls[0])
+        self.assertEqual(calls[0][calls[0].index("-p") + 1], "3")
+        self.assertEqual(j["page"], 3)
+        self.assertEqual(j["total_pages"], 100)
+        self.assertEqual(j["results"][0]["id"], "1:ab")
+
     def test_search_relogins_and_retries_when_session_expired(self):
         calls = []
 
