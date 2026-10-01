@@ -12,12 +12,20 @@ import hashlib
 import inspect
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 
 from . import db
 
-mcp = FastMCP("bookplate", streamable_http_path="/")
+mcp = FastMCP("bookplate", streamable_http_path="/",
+              # FastMCP auto-enables DNS-rebinding Host checks for localhost
+              # servers, which 421s any client whose Host header isn't
+              # 127.0.0.1/localhost (LAN IP, domain, docker, reverse proxy).
+              # Pointless here: every request must carry a bp_ bearer token
+              # (TokenMiddleware), which a rebinding page cannot obtain.
+              transport_security=TransportSecuritySettings(
+                  enable_dns_rebinding_protection=False))
 
 
 class TokenMiddleware:
