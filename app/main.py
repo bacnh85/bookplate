@@ -972,9 +972,10 @@ def send_to_kindle(book_id: int, req: KindleSendReq, user=UserDep):
 # ---------- z-library (env-gated) ----------
 
 @app.get("/api/zlib/search")
-async def zlib_search(q: str, page: int = 1, user=UserDep):
+async def zlib_search(q: str, page: int = 1, ext: str = "", user=UserDep):
     try:
-        j = await zlib.search_page(q, page=page)
+        j = await zlib.search_page(q, page=page,
+                                   ext=_check_queue_ext(ext))
     except ZlibUnavailable as e:
         raise HTTPException(503, str(e))
     return {**j, "has_more": j["page"] < (j["total_pages"] or 1)}
@@ -1091,10 +1092,11 @@ def zlib_queue_retry(job_id: int, user=UserDep):
 # ---------- anna's archive (env-gated, member secret key) ----------
 
 @app.get("/api/annas/search")
-async def annas_search(q: str, page: int = 1, user=UserDep):
+async def annas_search(q: str, page: int = 1, ext: str = "", user=UserDep):
     try:
         # 50 = the natural AA page size; slicing it to 20 would hide 30 rows/page
-        j = await annas.search_page(q, count=50, page=page)
+        j = await annas.search_page(q, count=50, page=page,
+                                    ext=_check_queue_ext(ext))
     except AnnasConfigError as e:
         raise HTTPException(400, str(e))  # permanent: missing/rejected key
     except AnnasUnavailable as e:
@@ -1208,13 +1210,14 @@ async def ai_chat_endpoint(req: ChatReq, user=UserDep):
     if not _ai_throttle(user["id"]):
         raise HTTPException(429, "too many AI requests — wait a minute")
 
-    async def search_store(query: str, source: str | None = None) -> list[dict]:
+    async def search_store(query: str, source: str | None = None,
+                           ext: str = "") -> list[dict]:
         # configured-ness = the account pool has an enabled account (not CLI presence)
         from .zlib_accounts import configured
         src = source or ("zlibrary" if configured() else "annas")
         if src == "zlibrary":
-            return await zlib.search(query, count=8)
-        return await annas.search(query, count=8)
+            return await zlib.search(query, count=8, ext=ext)
+        return await annas.search(query, count=8, ext=ext)
 
     system = (
         "You are the librarian of Bookplate, a self-hosted ebook library. Today is "

@@ -18,6 +18,7 @@ import time
 import tempfile
 import unittest
 from unittest import mock
+from unittest.mock import AsyncMock
 
 import httpx
 
@@ -249,6 +250,31 @@ class SearchTests(unittest.TestCase):
         self.assertIsNone(j["total_pages"])
         self.assertLessEqual(len(j["results"]), 50)
         # full AA pages yield 50 cards, so has_more is the caller's len>=50 check
+
+    def test_search_page_filters_by_ext(self):
+        seen = {}
+
+        async def fake_authed(self, url):
+            seen["url"] = url
+            return resp(200, text=FIXTURE.read_text())
+        with mock.patch.object(Annas, "_fetch_authed", fake_authed):
+            j = run(self.annas.search_page("q", ext="epub"))
+        self.assertIn("&ext=epub", seen["url"])
+        self.assertTrue(j["results"])
+        self.assertTrue(all(r["extension"] == "epub" for r in j["results"]))
+        with mock.patch.object(Annas, "_fetch_authed", fake_authed):
+            rows = run(self.annas.search_page("q", ext="pdf"))["results"]
+        self.assertTrue(all(r["extension"] == "pdf" for r in rows))
+        # under "All" (no filter) other formats come through
+        with mock.patch.object(Annas, "_fetch_authed", fake_authed):
+            all_rows = run(self.annas.search_page("q"))["results"]
+        self.assertTrue(any(r["extension"] not in ("pdf", "") for r in all_rows))
+
+    def test_search_ext_passes_through(self):
+        with mock.patch.object(Annas, "search_page",
+                               side_effect=AsyncMock(return_value={"results": []})) as sp:
+            run(self.annas.search("q", count=5, ext="pdf"))
+        sp.assert_called_once_with("q", 5, 1, "pdf")
 
     def test_search_raises_on_non_200(self):
         async def fake_authed(self, url):
@@ -548,6 +574,24 @@ class MainWiringTests(unittest.TestCase):
             with self.assertRaises(self.main.HTTPException) as cm:
                 run(self.main.annas_search(q="x", user=self.user))
         self.assertEqual(cm.exception.status_code, 503)
+
+    def test_search_endpoint_rejects_unknown_ext(self):
+        for endpoint in (self.main.zlib_search, self.main.annas_search):
+            with self.subTest(endpoint=endpoint.__name__):
+                with self.assertRaises(self.main.HTTPException) as cm:
+                    run(endpoint(q="x", ext="djvu", user=self.user))
+                self.assertEqual(cm.exception.status_code, 400)
+                self.assertIn("allowed", cm.exception.detail)
+
+    def test_search_endpoint_passes_ext(self):
+        seen = {}
+
+        async def fake_sp(q, count=20, page=1, ext=""):
+            seen["ext"] = ext
+            return {"results": [], "page": 1, "total_pages": None}
+        with mock.patch.object(self.main.annas, "search_page", fake_sp):
+            run(self.main.annas_search(q="x", ext="epub", user=self.user))
+        self.assertEqual(seen["ext"], "epub")
 
     def test_run_job_dispatches_annas_never_zlib(self):
         # a dispatch typo must not silently send AA jobs to the zlib CLI

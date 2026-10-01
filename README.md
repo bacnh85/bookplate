@@ -92,6 +92,8 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 - **Anna's Archive**: search (member key) and downloads that work both for members
   (fast API path) and free accounts (automatic slow partner-server fallback with
   waitlist handling).
+- **Format filter**: search chips narrow results to one format — epub, pdf,
+  mobi, azw, azw3, prc, fb2, cbz — on both sources.
 - **Download queue**: shared, sequential, quota-aware. It respects the Z-Library
   daily limit (waits and re-checks when exhausted), retries transient failures with
   backoff (3 attempts, 5/30 min), and survives restarts (jobs resume).

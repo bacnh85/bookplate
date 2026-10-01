@@ -751,6 +751,28 @@ const quotaText = (l) => (l.total_allowed != null
 let zlibTimer;
 let zlibSearchSeq = 0;  // discard stale responses from overlapping searches
 let storePage = 1, storePageSize = 20, storeQuery = "";
+const STORE_EXTS = ["epub", "pdf", "mobi", "azw", "azw3", "prc", "fb2", "cbz"];
+let storeExt = localStorage.getItem("storeExt") || "";
+function renderStoreChips() {
+  const wrap = $("#store-chips");
+  wrap.innerHTML = "";
+  for (const [key, label] of [["", "All formats"],
+      ...STORE_EXTS.map((e) => [e, e.toUpperCase()])]) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip" + (storeExt === key ? " active" : "");
+    chip.textContent = label;
+    chip.onclick = () => setStoreExt(key);
+    wrap.append(chip);
+  }
+}
+function setStoreExt(ext) {
+  if (storeExt === ext) return;
+  storeExt = ext;
+  localStorage.setItem("storeExt", storeExt);
+  renderStoreChips();
+  if ($("#zlib-search").value.trim()) zlibSearch($("#zlib-search").value);  // page 1
+}
 $("#zlib-search").oninput = (e) => {
   clearTimeout(zlibTimer);
   zlibTimer = setTimeout(() => zlibSearch(e.target.value), 400);
@@ -763,7 +785,8 @@ async function zlibSearch(q, page = 1) {
   box.innerHTML = `<div class="skeleton" style="height:84px"></div>`;
   try {
     const { results, total_pages, has_more } = await api(
-      `${SOURCES[findSource].search}?q=${encodeURIComponent(q)}&page=${page}`);
+      `${SOURCES[findSource].search}?q=${encodeURIComponent(q)}&page=${page}`
+      + (storeExt ? `&ext=${encodeURIComponent(storeExt)}` : ""));
     if (seq !== zlibSearchSeq) return;  // a newer search superseded this one
     storeQuery = q; storePage = page;
     if (page === 1) storePageSize = results.length || 20;
@@ -792,6 +815,7 @@ function renderStorePager(n, totalPages, hasMore, page) {
 }
 $("#store-prev").onclick = () => { if (storePage > 1) zlibSearch(storeQuery, storePage - 1); };
 $("#store-next").onclick = () => zlibSearch(storeQuery, storePage + 1);
+renderStoreChips();
 
 function ratingLine(r) {
   return `★ ${r.rating || "?"}${r.quality ? ` / ${r.quality}` : ""}`;

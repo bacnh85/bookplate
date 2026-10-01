@@ -124,16 +124,17 @@ async def add_to_collection(collection_id: int, book_ids: list[int],
 
 
 @mcp.tool()
-async def search_store(query: str, source: str = "") -> list[dict]:
+async def search_store(query: str, source: str = "", ext: str = "") -> list[dict]:
     """Search a download store (Z-Library or Anna's Archive) for books to queue.
-    source: 'zlibrary', 'annas', or '' for whichever is configured."""
+    source: 'zlibrary', 'annas', or '' for whichever is configured.
+    ext: optional format filter (pdf, epub, mobi, azw, azw3, prc, fb2, cbz)."""
     from . import settings
     from .zlib_accounts import configured
     src = source or ("zlibrary" if configured() else "annas")
     zlib, annas = _lazy("zlib"), _lazy("annas")
     if src == "zlibrary":
-        return await zlib.search(query, count=8)
-    return await annas.search(query, count=8)
+        return await zlib.search(query, count=8, ext=ext)
+    return await annas.search(query, count=8, ext=ext)
 
 
 @mcp.tool()

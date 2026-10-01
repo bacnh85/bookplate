@@ -205,12 +205,15 @@ class Zlib:
         await self._login()
         return await self._run(*args, timeout=timeout)
 
-    async def search_page(self, q: str, count: int = 20, page: int = 1) -> dict:
+    async def search_page(self, q: str, count: int = 20, page: int = 1,
+                          ext: str = "") -> dict:
         """One page of search results: {results, page, total_pages}. The store
-        UI pages with these; total_pages is the CLI's own count."""
+        UI pages with these; total_pages is the CLI's own count. ext narrows
+        results server-side via the CLI's --ext flag."""
         await self._ensure_session()
         rc, out, err = await self._run_authed(
-            "search", q, "--json", "-n", str(count), "-p", str(max(1, page)), timeout=90)
+            "search", q, "--json", "-n", str(count), "-p", str(max(1, page)),
+            *(("--ext", ext) if ext else ()), timeout=90)
         if rc != 0:
             raise ZlibUnavailable(f"Z-Library search failed: {(err or out).strip()[:200]}")
         try:
@@ -237,8 +240,9 @@ class Zlib:
                 "page": parsed.get("page", page),
                 "total_pages": parsed.get("total_pages", 1)}
 
-    async def search(self, q: str, count: int = 20, page: int = 1) -> list[dict]:
-        return (await self.search_page(q, count, page))["results"]
+    async def search(self, q: str, count: int = 20, page: int = 1,
+                     ext: str = "") -> list[dict]:
+        return (await self.search_page(q, count, page, ext))["results"]
 
     async def limits(self) -> dict:
         await self._ensure_session()

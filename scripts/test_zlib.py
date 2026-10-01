@@ -173,6 +173,20 @@ class ZlibTests(unittest.TestCase):
         self.assertEqual(j["total_pages"], 100)
         self.assertEqual(j["results"][0]["id"], "1:ab")
 
+    def test_search_page_forwards_ext_to_cli(self):
+        calls = []
+
+        async def fake_run(self, *args, **k):
+            calls.append(args)
+            return 0, json.dumps({"books": [], "page": 1, "total_pages": 1}), ""
+
+        with mock.patch.object(Zlib, "_run", fake_run):
+            run(Zlib().search_page("q", ext="epub"))
+            run(Zlib().search_page("q"))
+        self.assertIn("--ext", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--ext") + 1], "epub")
+        self.assertNotIn("--ext", calls[1])
+
     def test_search_relogins_and_retries_when_session_expired(self):
         calls = []
 

@@ -348,11 +348,11 @@ class EndpointTests(unittest.TestCase):
         self.stub.steps = [{"tool": {"query": "anything"}}]  # model omits source
         calls = []
 
-        async def fake_annas_search(q, count=20):
+        async def fake_annas_search(q, count=20, ext=""):
             calls.append(("annas", q))
             return []
 
-        async def fail_zlib_search(q, count=20):
+        async def fail_zlib_search(q, count=20, ext=""):
             calls.append(("zlib", q))
             return []
 
