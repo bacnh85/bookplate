@@ -699,6 +699,7 @@ applySourceUI(findSource = localStorage.getItem("findSource") === "annas" ? "ann
 function showStore() {
   $("#zlib-error").textContent = "";
   renderSourceCards();
+  refreshQueue();  // fresh shelf/download states before results paint
   if (findSource === "zlib") showQuota();
 }
 
@@ -751,6 +752,16 @@ const quotaText = (l) => (l.total_allowed != null
 let zlibTimer;
 let zlibSearchSeq = 0;  // discard stale responses from overlapping searches
 let storePage = 1, storePageSize = 20, storeQuery = "";
+let queueMap = new Map();  // store id -> queue job (status + in_library), fed by refreshQueue
+const QUEUE_CHIP = {
+  queued: "Queued", waiting_quota: "Waiting for quota", downloading: "Downloading…",
+  processing: "Processing…",
+};
+function storeStatus(job) {  // chip label for a queue/shelf state, null = none
+  if (!job) return null;
+  if (job.in_library || job.status === "done") return "On shelf ✓";
+  return QUEUE_CHIP[job.status] || null;
+}
 const STORE_EXTS = ["epub", "pdf", "mobi", "azw", "azw3", "prc", "fb2", "cbz"];
 let storeExt = localStorage.getItem("storeExt") || "";
 function renderStoreChips() {
@@ -826,6 +837,8 @@ function resultRow(r, rank) {
   row.className = "result-row";
   row.tabIndex = 0;
   row.setAttribute("role", "button");
+  row.dataset.zlibId = String(r.id);
+  row.dataset.source = rowSource(r);
   row.innerHTML = `
     <span class="rank" aria-hidden="true">${rank}</span>
     <img loading="lazy" src="${esc(r.cover)}" alt="" onerror="this.removeAttribute('src')">
@@ -847,7 +860,6 @@ function resultRow(r, rank) {
   const later = document.createElement("button");
   later.className = "btn-ghost queue-add";
   later.type = "button";
-  later.textContent = "Get later";
   later.title = "Add to download queue";
   later.onclick = async (e) => {
     e.stopPropagation();
@@ -858,7 +870,28 @@ function resultRow(r, rank) {
     } catch (err) { $("#zlib-error").textContent = err.message; }
   };
   row.querySelector(".result-meta").append(later);
+  paintStoreRow(row, r);
   return row;
+}
+
+/* shelf/download state on result rows — the queue button doubles as the state
+   marker (accent when on shelf), patched in place by the 3s poller */
+function paintStoreRow(row, r) {
+  const job = rowSource(r) === "annas" ? null : queueMap.get(String(r.id));
+  const status = storeStatus(job);
+  const later = row.querySelector(".queue-add");
+  if (later) {
+    later.textContent = status || "Get later";
+    later.disabled = !!status;
+    later.classList.toggle("on-shelf", !!status && (job?.in_library || job?.status === "done"));
+  }
+}
+
+function updateStoreRowStates() {
+  if (currentView !== "store") return;
+  document.querySelectorAll("#zlib-results .result-row[data-zlib-id]").forEach((row) => {
+    paintStoreRow(row, { id: row.dataset.zlibId, source: row.dataset.source });
+  });
 }
 
 /* ---------- book detail panel ---------- */
@@ -959,6 +992,7 @@ async function enqueue(r) {
     id: r.id, name: r.name, authors: r.authors, cover: r.cover,
     extension: r.extension, size: r.size } });
   if (j.status === "failed") await api(`/api/zlib/queue/${j.id}/retry`, { method: "POST" });
+  queueMap.set(String(j.zlib_id), j);  // instant row feedback; poller refines
   refreshQueue();
   return j;
 }
@@ -966,8 +1000,10 @@ async function enqueue(r) {
 async function refreshQueue() {
   let jobs = [];
   try { ({ jobs } = await api("/api/zlib/queue")); } catch { /* signed out etc. */ }
+  queueMap = new Map(jobs.map((j) => [String(j.zlib_id), j]));
   renderQueue(jobs);
   mirrorDetail(jobs);
+  updateStoreRowStates();
   refreshQuota();  // downloads burn quota — keep detail/dialog lines live while the poller runs
   const need = jobs.some((j) => !QUEUE_TERMINAL.includes(j.status)) || $("#downloads-dialog").open;
   if (need && !queueTimer) queueTimer = setInterval(refreshQueue, 3000);
@@ -1371,6 +1407,7 @@ async function boot() {
   if (!token()) {
     $("#auth-view").hidden = false;
     $("#app-view").hidden = true;
+    window.__booted = true;  // boot-fail watchdog stands down
     return;
   }
   $("#auth-view").hidden = true;
@@ -1392,10 +1429,19 @@ async function boot() {
     loadCollections();
     show("home");
     refreshQueue();  // badge + resume polling if jobs are active
+    window.__booted = true;
   } catch (e) {
     // offline: token present → show the cached shelf anyway; shell + books +
     // covers come from the SW cache. 401 is handled in api() (logout+reload).
-    if (e.status !== 401) { show("home"); }
+    if (e.status !== 401) {
+      show("home");
+      // show() re-enters loadHome which may throw again — don't let the shelf
+      // render die silently and pass for a boot success
+      window.__booted = true;
+      loadHome().catch((err) => {
+        $("#home-stats").innerHTML = `<div class="empty">Couldn’t load your library — ${esc(err.message || "network error")}.</div>`;
+      });
+    }
   }
 }
 $("#logout-btn").onclick = logout;

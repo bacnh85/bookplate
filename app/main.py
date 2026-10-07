@@ -481,7 +481,8 @@ def put_book_meta(book_id: int, req: BookMetaReq, user=UserDep):
 
 
 async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
-                  fallback: dict | None = None) -> tuple[dict, bool]:
+                  fallback: dict | None = None,
+                  store_id: str | None = None) -> tuple[dict, bool]:
     """Shared ingest: sha dedup -> metadata (with optional z-lib fallback fields)
     -> store -> insert -> shelf link. Returns (book, duplicate). tmp carries the
     file extension; its bytes are moved into the store on first ingest."""
@@ -490,6 +491,11 @@ async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
         row = con.execute("SELECT * FROM books WHERE sha256=?", (sha,)).fetchone()
         if row:
             book, dup = dict(row), True
+            if store_id and not book["zlib_id"]:
+                # shelf dedup hit from a store download — backfill the store link
+                con.execute("UPDATE books SET zlib_id=? WHERE id=? AND zlib_id IS NULL",
+                            (store_id, book["id"]))
+                book["zlib_id"] = store_id
         else:
             dup = False
             meta = await metadata.build_metadata(tmp, orig_name)
@@ -514,12 +520,12 @@ async def _ingest(tmp: Path, orig_name: str, source: str, user_id: int,
             ccolor = metadata.cover_color(meta["cover"], meta["cover_ext"]) if meta["cover"] else None
             cur = con.execute(
                 """INSERT INTO books(sha256, ext, size, title, norm_title, authors, isbn, language,
-                   categories, description, year, series, series_index, cover_ext, cover_color, source, added_by)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   categories, description, year, series, series_index, zlib_id, cover_ext, cover_color, source, added_by)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (sha, tmp.suffix.lstrip(".").lower(), size, meta["title"], _norm_title(meta["title"]),
                  meta["authors"], meta["isbn"], meta["language"], meta["categories"],
                  meta["description"], meta["year"], meta.get("series") or None,
-                 meta.get("series_index"), meta["cover_ext"], ccolor, source, user_id))
+                 meta.get("series_index"), store_id, meta["cover_ext"], ccolor, source, user_id))
             if meta["cover"]:
                 cover_path(sha, meta["cover_ext"] or "jpg").write_bytes(meta["cover"])
             book = dict(con.execute("SELECT * FROM books WHERE id=?", (cur.lastrowid,)).fetchone())
@@ -1050,9 +1056,17 @@ def zlib_queue(user=UserDep):
     # limits are NOT included: the frontend fetches /api/zlib/limits once per
     # dialog open — calling the zlib CLI on every 3s poll would spawn a process
     # per poll.
+    # in_library/book_id: did this store item already land on the user's shelf?
+    # (books.zlib_id is stamped at ingest) — the store UI marks those rows.
     with db.conn() as con:
         jobs = [dict(r) for r in con.execute(
-            "SELECT * FROM download_jobs WHERE user_id=? ORDER BY id DESC LIMIT 200",
+            """SELECT j.*, b.id AS book_id,
+                      CASE WHEN b.id IS NOT NULL THEN 1 ELSE 0 END AS in_library
+               FROM download_jobs j
+               LEFT JOIN books b ON b.zlib_id = j.zlib_id
+                    AND EXISTS (SELECT 1 FROM user_books ub
+                                WHERE ub.user_id = j.user_id AND ub.book_id = b.id)
+               WHERE j.user_id=? ORDER BY j.id DESC LIMIT 200""",
             (user["id"],))]
     return {"jobs": jobs}
 
@@ -1737,7 +1751,8 @@ async def _run_job(job: dict) -> None:
                       "annas-archive" if job.get("source") == "annas" else "zlibrary",
                       job["user_id"],
                       fallback={"name": job["title"], "authors": job["authors"],
-                                "cover": job["cover_url"]})
+                                "cover": job["cover_url"]},
+                      store_id=str(job["zlib_id"]))
     finally:
         tmp.unlink(missing_ok=True)
     _job_update(jid, status="done", error="")

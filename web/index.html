@@ -5,16 +5,43 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
 <title>Bookplate — your ebook library</title>
-<link rel="stylesheet" href="/app.css?v=10">
+<link rel="stylesheet" href="/app.css?v=11">
 </head>
 <body>
-<script>/* DIAG remove */ window.CLICKLOG = [];
-  addEventListener("click", e => window.CLICKLOG.push({x: e.clientX, y: e.clientY,
-    target: (e.target.id || e.target.tagName), trusted: e.isTrusted}), true);
-  </script>
 <script>
 if ("serviceWorker" in navigator) addEventListener("load", () =>
   navigator.serviceWorker.register("/sw.js").catch(() => {}));
+</script>
+<script>/* boot watchdog: app.js reveals the UI only after boot() succeeds — if it
+   never runs (stale SW cache served a broken module, network hiccup), the page
+   would stay blank forever. This inline script has zero dependencies and fires
+   once. window.__booted is set by app.js boot(). */
+addEventListener("load", () => setTimeout(() => {
+  if (window.__booted || document.querySelector("#boot-fail")) return;
+  const el = document.createElement("div");
+  el.id = "boot-fail";
+  el.setAttribute("role", "alert");
+  el.innerHTML = `<div><strong>Bookplate didn’t finish loading.</strong></div>`
+    + `<div>This is usually an outdated offline cache.</div>`;
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.textContent = "Reload";
+  reload.onclick = () => location.reload();
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "Clear offline cache";
+  clear.onclick = async () => {
+    try {
+      const regs = await navigator.serviceWorker?.getRegistrations?.() || [];
+      await Promise.all(regs.map((r) => r.unregister()));
+      const keys = await caches?.keys?.() || [];
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch {}
+    location.reload();
+  };
+  el.append(reload, clear);
+  document.body.append(el);
+}, 4000));
 </script>
   <script>/* theme before first paint — no flash of the wrong palette (app.js refines).
   Same resolution + validation as app.js readTheme(); storage access guarded. */
@@ -392,6 +419,6 @@ if ("serviceWorker" in navigator) addEventListener("load", () =>
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=27"></script>
+<script type="module" src="/app.js?v=28"></script>
 </body>
 </html>

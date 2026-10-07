@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS books(
   year INTEGER,
   series TEXT,
   series_index REAL,
+  zlib_id TEXT,
   cover_ext TEXT,
+  cover_color TEXT,
   source TEXT NOT NULL DEFAULT 'upload',
   added_by INTEGER REFERENCES users(id),
   created_at TEXT DEFAULT (datetime('now'))
@@ -239,6 +241,10 @@ def init() -> None:
             c.execute("ALTER TABLE books ADD COLUMN series TEXT")
         if "series_index" not in bcols:
             c.execute("ALTER TABLE books ADD COLUMN series_index REAL")
+        # store origin id (z-lib book id / annas md5) — links shelf books back to
+        # store search results so the UI can show "On shelf ✓"
+        if "zlib_id" not in bcols:
+            c.execute("ALTER TABLE books ADD COLUMN zlib_id TEXT")
         # at-least-one-admin invariant: an upgraded DB (everyone role='user') with
         # registration defaulting to 'approval' would deadlock — nobody could approve
         # or reach /api/admin/*. Promote the earliest ACTIVE account. (Debris

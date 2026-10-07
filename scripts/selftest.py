@@ -403,6 +403,9 @@ def main():
               f"{r.status_code} {r.text[:120]}")
     jobs = cx.get(f"{BASE}/api/zlib/queue", headers={"Authorization": f"Bearer {t_alice}"}).json()["jobs"]
     check("queue list", any(j["id"] == qjob["id"] for j in jobs))
+    check("queue rows carry in_library", all("in_library" in j for j in jobs)
+          and not any(j["in_library"] for j in jobs),
+          str([(j.get('zlib_id'), j.get('in_library')) for j in jobs[:3]]))
     has_backend = cx.get(f"{BASE}/api/zlib/limits", headers={"Authorization": f"Bearer {t_alice}"}).status_code == 200
     if not has_backend:
         handled = None

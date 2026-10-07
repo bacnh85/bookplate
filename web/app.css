@@ -205,6 +205,15 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
 .book-actions button { padding: 4px 10px; font-size: var(--fs-sm); }
 .shared-by { font-size: var(--fs-sm); color: var(--accent); font-style: italic; }
 
+/* ---------- boot watchdog (inline script in index.html) ---------- */
+#boot-fail {
+  position: fixed; inset: auto 16px 16px 16px; z-index: 999;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  background: var(--card); border-radius: var(--r-md); box-shadow: var(--e-md);
+  padding: 16px 24px; font-size: var(--fs-base); color: var(--ink);
+}
+#boot-fail button { padding: 6px 14px; }
+
 /* ---------- find (z-library) ---------- */
 .results { display: flex; flex-direction: column; }
 .result-row {
@@ -228,6 +237,12 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
   font-size: var(--fs-sm); color: var(--ink-soft); text-align: right; white-space: nowrap;
 }
 .result-rating { color: var(--accent); }
+.queue-add.on-shelf {
+  border-color: var(--accent); color: var(--accent);
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  font-size: 0.6875rem;
+}
+.queue-add.on-shelf:disabled { opacity: 1; cursor: default; }  /* state marker, not a dimmed action */
 
 /* ---------- home ---------- */
 .stats { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 32px; }
