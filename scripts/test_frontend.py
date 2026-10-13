@@ -86,6 +86,29 @@ class TestTheme(unittest.TestCase):
         self.assertRegex(idx, r"localStorage\.getItem\(\"theme\"\)")
         self.assertIn("prefers-color-scheme: dark", idx)
 
+
+class TestLibraryViewToggle(unittest.TestCase):
+    """Library grid/list toggle: joined segmented control in the library view
+    head, persisted under shelfView, applied by a .as-list class on #grid."""
+
+    def test_toggle_wired_and_persisted(self):
+        idx = INDEX.read_text()
+        js = (WEB / "app.js").read_text()
+        for id_ in ("view-grid", "view-list"):
+            self.assertIn(f'id="{id_}"', idx)
+            self.assertIn(f'"#{id_}"', js)
+        self.assertIn('localStorage.getItem("shelfView")', js)
+        self.assertIn('localStorage.setItem("shelfView"', js)
+        self.assertIn('"as-list"', js)  # applied on #grid via classList.toggle
+
+    def test_sort_menu_wired_and_persisted(self):
+        idx = INDEX.read_text()
+        js = (WEB / "app.js").read_text()
+        self.assertIn('id="sort-btn"', idx)
+        self.assertIn('"#sort-btn"', js)
+        self.assertIn('localStorage.getItem("shelfSort")', js)
+        self.assertIn('localStorage.setItem("shelfSort"', js)
+
     def test_theme_cycle_and_auto_resolution(self):
         src = (WEB / "app.js").read_text()
         self.assertIn('matchMedia("(prefers-color-scheme: dark)")', src)

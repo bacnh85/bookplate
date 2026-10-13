@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="manifest" href="/manifest.webmanifest">
 <title>Bookplate — your ebook library</title>
-<link rel="stylesheet" href="/app.css?v=11">
+<link rel="stylesheet" href="/app.css?v=12">
 </head>
 <body>
 <script>
@@ -164,6 +164,17 @@ addEventListener("load", () => setTimeout(() => {
           <div class="view-head">
             <h2 id="library-title">All</h2>
             <span class="result-sub" id="library-count"></span>
+            <div class="view-actions">
+              <button class="btn-ghost" id="sort-btn" type="button">Sort</button>
+              <div class="source-toggle view-toggle" role="group" aria-label="Layout">
+                <button type="button" id="view-grid" class="btn-ghost active" aria-pressed="true" title="Grid view" aria-label="Grid view">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 4.5h6v6h-6zM13.5 4.5h6v6h-6zM4.5 13.5h6v6h-6zM13.5 13.5h6v6h-6z"/></svg>
+                </button>
+                <button type="button" id="view-list" class="btn-ghost" aria-pressed="false" title="List view" aria-label="List view">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h12M9 12h12M9 18h12M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg>
+                </button>
+              </div>
+            </div>
             <span class="view-actions" id="collection-actions" hidden>
               <button class="btn-ghost" id="collection-rename" type="button">Rename</button>
               <button class="btn-ghost" id="collection-delete" type="button">Delete</button>
@@ -419,6 +430,6 @@ addEventListener("load", () => setTimeout(() => {
 
 <div id="transfers" aria-live="polite"></div>
 
-<script type="module" src="/app.js?v=28"></script>
+<script type="module" src="/app.js?v=30"></script>
 </body>
 </html>

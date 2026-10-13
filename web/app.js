@@ -150,15 +150,18 @@ function bookTile(b) {
   const STATUS_GLYPH = { want: "＋", reading: "📖", read: "✓", dnf: "✕" };
   const glyph = b.status && STATUS_GLYPH[b.status] ? `<span class="tile-status" title="${esc(STATUS_NAMES[b.status])}">${STATUS_GLYPH[b.status]}</span>` : "";
   const stars = b.rating ? `<span class="tile-rating" title="${b.rating}/5">${"★".repeat(b.rating)}</span>` : "";
+  const rowText = `<div class="tile-text" title="${esc(b.title)}"><span class="tile-title">${esc(b.title)}</span><span class="tile-author">${esc(b.authors || "")}</span></div>`;
   el.innerHTML = `
     <div class="cover" title="${esc(b.title)}">
       <div class="spine-title">${esc(b.title)}</div>
       ${b.cover_ext ? `<img loading="lazy" src="/api/books/${b.id}/cover?v=${b.cover_v ?? 0}" alt="" onerror="this.remove()">` : ""}
     </div>
+    ${rowText}
     <div class="tile-meta">${glyph}${stars}${progress}
       <button class="tile-more" type="button" aria-haspopup="menu" aria-label="Actions — ${esc(b.title)}">⋯</button>
     </div>`;
   el.querySelector(".cover").onclick = () => openReader(b.id);
+  el.querySelector(".tile-text").onclick = () => openReader(b.id);
   if (b.cover_color) el.querySelector(".cover").style.setProperty("--cover-c", b.cover_color);
   el.querySelector(".tile-more").onclick = (e) => { e.stopPropagation(); openMenu(bookMenuItems(b), e.currentTarget); };
   return el;
@@ -174,6 +177,7 @@ async function loadShelf(q = "") {
   let filtered = shelfFilter ? books.filter((b) => EXT_GROUPS[shelfFilter].includes(b.ext)) : books;
   if (metaFilter) filtered = filtered.filter((b) =>
     metaFilter === "rated" ? b.rating > 0 : b.status === metaFilter);
+  sortBooks(filtered);
   $("#library-title").textContent = FILTER_NAMES[shelfFilter] || "All";
   $("#library-count").textContent = filtered.length ? `${filtered.length} item${filtered.length > 1 ? "s" : ""}` : "";
   $("#shelf-empty").innerHTML = q ? `No results for “${esc(q)}”.`
@@ -181,6 +185,46 @@ async function loadShelf(q = "") {
   $("#shelf-empty").hidden = !!filtered.length;
   fillTiles($("#grid"), filtered);
 }
+
+/* grid/list layout toggle — persisted, applies to the library grid only */
+let shelfView = localStorage.getItem("shelfView") === "list" ? "list" : "grid";
+function applyShelfView() {
+  const list = shelfView === "list";
+  $("#grid").classList.toggle("as-list", list);
+  $("#view-grid").classList.toggle("active", !list);
+  $("#view-list").classList.toggle("active", list);
+  $("#view-grid").setAttribute("aria-pressed", String(!list));
+  $("#view-list").setAttribute("aria-pressed", String(list));
+}
+for (const id of ["view-grid", "view-list"])
+  $("#" + id).onclick = (e) => {
+    shelfView = e.currentTarget.id === "view-list" ? "list" : "grid";
+    try { localStorage.setItem("shelfView", shelfView); } catch { /* blocked: session-only layout */ }
+    applyShelfView();
+  };
+applyShelfView();
+
+/* sort menu — persisted, applied to the library grid (all + filters + collections) */
+const SORT_NAMES = { recent: "Recent", title: "Title", author: "Author" };
+let shelfSort = localStorage.getItem("shelfSort");
+if (!SORT_NAMES[shelfSort]) shelfSort = "recent";
+function sortBooks(books) {
+  const by = {  // recent = no-op: keep the backend's own order (library: created_at
+                // desc; collections: added_at desc — re-sorting here would change it)
+    title: (a, b) => (a.norm_title || a.title).localeCompare(b.norm_title || b.title),
+    author: (a, b) => (a.authors || "").localeCompare(b.authors || ""),
+  }[shelfSort];
+  if (by) books.sort(by);
+}
+$("#sort-btn").onclick = (e) => openMenu(
+  Object.keys(SORT_NAMES).map((key) => ({
+    label: (shelfSort === key ? "✓ " : "") + SORT_NAMES[key],
+    fn: () => {
+      shelfSort = key;
+      try { localStorage.setItem("shelfSort", shelfSort); } catch { /* blocked: session-only sort */ }
+      rerenderView();
+    },
+  })), e.currentTarget);
 
 /* status filter chips (client-side, same pattern as the format chips) */
 function renderMetaChips() {
@@ -547,11 +591,13 @@ async function loadCollections() {
 async function loadCollection() {
   try {
     const c = await api(`/api/collections/${currentCollectionId}`);
+    const books = c.books.slice();
+    sortBooks(books);
     $("#library-title").textContent = c.name;
     $("#library-count").textContent = c.books.length ? `${c.books.length} item${c.books.length > 1 ? "s" : ""}` : "";
     $("#shelf-empty").innerHTML = `No books in this collection.<small>Use the ⋯ menu on a book cover to add it.</small>`;
     $("#shelf-empty").hidden = !!c.books.length;
-    fillTiles($("#grid"), c.books);
+    fillTiles($("#grid"), books);
   } catch {  // deleted elsewhere or not ours — fall back to All
     show("library");
   }

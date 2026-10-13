@@ -136,6 +136,31 @@ main { max-width: 1200px; width: 100%; margin: 0 auto; padding: 24px; }
   grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
 }
 .tile { position: relative; }
+.view-toggle .btn-ghost { padding: 6px 10px; }
+.view-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; display: block; }
+.tile-text { display: none; }  /* list-only: title + author beside the cover */
+/* list view: same tiles as catalogue rows — hairline rules, right-aligned meta */
+#grid.as-list { gap: 0; grid-template-columns: 1fr; }
+#grid.as-list .tile {
+  display: flex; align-items: center; gap: 16px;
+  padding: 12px 0; border-bottom: 1px solid var(--line);
+  min-width: 0;  /* grid item min-size: let the 1fr track constrain nowrap titles */
+}
+#grid.as-list .tile .cover { flex: none; width: 56px; }
+#grid.as-list .tile .spine-title { display: none; }  /* unreadable at 56px; title sits beside */
+#grid.as-list .tile-text {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 1; min-width: 0; cursor: pointer;
+}
+#grid.as-list .tile-title {
+  font-family: var(--font-display); font-size: var(--fs-base); line-height: 1.3;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#grid.as-list .tile-author {
+  font-size: var(--fs-sm); color: var(--ink-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#grid.as-list .tile .tile-meta { margin-top: 0; flex: none; }
 /* 3D book, Apple-style: art is FULL-BLEED; the case (--cover-c = the art's own
    edge colour) only shows through as letterbox bars, melting into the art; the
    spine is a translucent overlay printed on the art (DESIGN.md book3d). */
