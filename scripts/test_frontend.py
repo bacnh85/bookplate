@@ -158,7 +158,7 @@ class TestReaderSettings(unittest.TestCase):
         # reader-font holds the numeric size; the family must never touch it
         src = READER.read_text()
         self.assertNotIn('put("font",', src)
-        self.assertRegex(src, r'parseFloat\(localStorage\.getItem\("reader-font"\)\) \|\| 17')
+        self.assertIn('parseFloat(localStorage.getItem("reader-font")) || 18', src)
 
 
 class TestReaderExperience(unittest.TestCase):
@@ -213,9 +213,9 @@ class TestReaderExperience(unittest.TestCase):
         value invalidates the grid rows and pages render at ~45% height."""
         src = READER.read_text()
         html = (WEB / "reader.html").read_text()
-        for v in ("16px", "48px", "96px"):
+        for v in ("16px", "32px", "64px"):
             self.assertIn(f'value="{v}"', html)
-        self.assertIn('get("reader-margin", "48px")', src)
+        self.assertIn('get("reader-margin", "32px")', src)
         self.assertIn('+ "px"', src)  # legacy unitless values normalized at write
 
     def test_pdfjs_range_chunk_size_bumped(self):
@@ -327,7 +327,7 @@ class TestPlatform(unittest.TestCase):
         self.assertIn('const VERSION = "bookplate-v3";', (WEB / "sw.js").read_text())
 
     def test_reader_js_stamp_bumped(self):
-        self.assertIn("/reader.js?v=17", self.READER_HTML)
+        self.assertIn("/reader.js?v=18", self.READER_HTML)
 
     def test_app_height_clamped_on_ios(self):
         # iOS 26 floating chrome sometimes reports the FULL screen height —

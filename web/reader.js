@@ -23,7 +23,7 @@ const settings = {
   "font-family": get("reader-font-family", "literata"),
   lineheight: get("reader-lineheight", "1.6"),
   align: get("reader-align", "justify"),
-  margin: get("reader-margin", "48px"),
+  margin: get("reader-margin", "32px"),
   flow: get("reader-flow", "paginated"),
 };
 const put = (k, v) => { settings[k] = v; localStorage.setItem(`reader-${k}`, v); };
@@ -138,7 +138,7 @@ const FONT_URLS = {
 if (!FONTS[settings["font-family"]]) put("font-family", "literata");
 
 let view = null;
-let fontPx = parseFloat(localStorage.getItem("reader-font")) || 17;  // size — separate key from font-family
+let fontPx = parseFloat(localStorage.getItem("reader-font")) || 18;  // size — separate key from font-family
 
 function applyStyles() {
   if (!view || view.isFixedLayout) return;  // PDF/CBZ render canvases — no book CSS to restyle
@@ -151,7 +151,10 @@ function applyStyles() {
            background: ${bg} !important; color: ${fg} !important;
            font-size: ${fontPx}px !important;
            line-height: ${settings.lineheight} !important;
-           ${justify ? `text-align: justify !important; -webkit-hyphens: auto !important; hyphens: auto !important;` : "text-align: left !important;"} }
+           ${justify ? `text-align: justify !important; -webkit-hyphens: auto !important; hyphens: auto !important;
+             -webkit-hyphenate-limit-before: 3 !important; -webkit-hyphenate-limit-after: 3 !important;
+             hyphenate-limit-chars: 6 3 3 !important; text-wrap: pretty !important;` : "text-align: left !important;"} }
+    p { widows: 2 !important; orphans: 2 !important; }
     p + p { ${justify ? "text-indent: 1.5em !important;" : ""} }
     a { color: ${accent} !important; }
     html { -webkit-text-size-adjust: 100%; }
@@ -167,7 +170,8 @@ function applyLayout() {
   // height — normalize any legacy unitless reader-margin (no migration needed)
   const marginPx = /^\d+(\.\d+)?$/.test(settings.margin) ? settings.margin + "px" : settings.margin;
   view.renderer.setAttribute("margin", marginPx);
-  view.renderer.setAttribute("animated", "");  // 300ms eased page turns
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches)
+    view.renderer.setAttribute("animated", "");  // 300ms eased page turns
   if (view.isFixedLayout) applyZoom();
 }
 
@@ -611,7 +615,7 @@ async function openFoliate(file) {
   }
 
   view.addEventListener("relocate", (e) => {
-    const { cfi, fraction, section, tocItem } = e.detail;
+    const { cfi, fraction, location, section, tocItem, pageItem } = e.detail;
     const pct = Math.round((fraction ?? 0) * 100);
     localStorage.setItem(progressKey, cfi);  // instant/offline resume cache
     localStorage.setItem(`${progressKey}-pct`, String(pct));
@@ -619,11 +623,22 @@ async function openFoliate(file) {
     pendingPos = { cfi, pct };
     clearTimeout(putTimer);
     putTimer = setTimeout(syncProgress, 2000);
-    $("#progress").textContent = view.isFixedLayout
-      ? `${section.current + 1} / ${section.total}` : `${pct}%`;
+    const chap = tocItem?.label?.trim() || "";
+    if (view.isFixedLayout) {
+      $("#progress").textContent = `Page ${section.current + 1} of ${section.total}`;
+      $("#reading-now").textContent = `Page ${section.current + 1} of ${section.total}`;
+    } else {
+      // Kindle-style: "Page N of M" when the book ships a page list, else percent
+      $("#progress").textContent = pageItem?.label ? `Page ${pageItem.label}` : `${pct}%`;
+      $("#reading-now").textContent =
+        `${chap ? chap + " · " : ""}${pct}%${pageItem?.label ? ` · Page ${pageItem.label}` : ""}`;
+    }
     $("#section-label").textContent = tocItem?.label?.trim() || "";
     if (!seeking) seek.value = Math.round((fraction ?? 0) * 1000);
-    $("#loading")?.remove();
+    if ($("#loading")) {  // first relocate — book is readable: drop into Kindle-style immersion
+      $("#loading").remove();
+      document.body.classList.add("chrome-hidden");
+    }
     if (view.isFixedLayout)  // warm the next page's byte ranges + render cache
       view.book.sections[section.current + 1]?.load?.().catch(() => {});
     syncBookmarkBtn();

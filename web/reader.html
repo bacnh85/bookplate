@@ -60,6 +60,21 @@
   }
   body.chrome-hidden #top-bar { transform: translateY(-110%); }
   body.chrome-hidden #bottom-bar { transform: translateY(110%); }
+/* Kindle-style peek footer: a static band under the page (reserves its height
+   up front — toggling it must never resize #viewer and repaginate the book) */
+#peek {
+  display: flex; justify-content: flex-start; align-items: baseline;
+  padding: 4px max(16px, var(--safe-right)) calc(6px + var(--safe-bottom));
+  padding-left: max(16px, var(--safe-left));
+  pointer-events: none;
+}
+/* bars up → footer content hidden but the band stays reserved (no reflow) */
+body:not(.chrome-hidden) #peek { visibility: hidden; }
+#reading-now {
+  font-size: var(--fs-sm); color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
   @media (prefers-reduced-motion: reduce) {
     #top-bar, #bottom-bar { transition: none; }
   }
@@ -229,9 +244,9 @@
         <option value="left">Left</option>
       </select></label>
       <label>Margin <select id="page-margin">
-        <option value="16px">Narrow</option>
-        <option value="48px">Normal</option>
-        <option value="96px">Wide</option>
+      <option value="16px">Narrow</option>
+      <option value="32px">Normal</option>
+      <option value="64px">Wide</option>
       </select></label>
       <label>Layout <select id="flow">
         <option value="paginated">Pages</option>
@@ -260,7 +275,8 @@
     <button id="next" type="button" aria-label="Next page">→</button>
   </div>
 </div>
-<script type="module" src="/reader.js?v=17"></script>
+<div id="peek"><span id="reading-now"></span></div>
+<script type="module" src="/reader.js?v=18"></script>
 <script>
 if ("serviceWorker" in navigator) addEventListener("load", () =>
   navigator.serviceWorker.register("/sw.js").catch(() => {}));

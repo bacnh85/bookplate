@@ -71,7 +71,9 @@ OPDS for iOS reader apps, AI metadata fallback (optional).
 
 **Reading**
 - **In-browser reader** (vendored foliate-js): paginated EPUB/MOBI/AZW/AZW3/PRC/FB2,
-  current position remembered per user, mobile-friendly.
+  current position remembered per user, mobile-friendly. Kindle-style reading:
+  auto-hiding chrome with a peek footer (`chapter · %`), immersive open, and
+  book typography (justified + hyphenated, widows/orphans control).
 - **Highlights, notes & bookmarks**: select text in the reader to highlight or
   attach a note (yellow/blue/green/red highlights and underlines, per-user and
   synced to the server); tap a highlight to edit or delete it; the 🔖 button
