@@ -327,7 +327,7 @@ class TestPlatform(unittest.TestCase):
         self.assertIn('const VERSION = "bookplate-v3";', (WEB / "sw.js").read_text())
 
     def test_reader_js_stamp_bumped(self):
-        self.assertIn("/reader.js?v=19", self.READER_HTML)
+        self.assertIn("/reader.js?v=20", self.READER_HTML)
 
     def test_app_height_clamped_on_ios(self):
         # iOS 26 floating chrome sometimes reports the FULL screen height —

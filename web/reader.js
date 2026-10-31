@@ -159,7 +159,7 @@ function applyStyles() {
            dead space at the top of every page. Normalize: justified = indent
            convention (no gaps); left = modest spacing (no indent to collapse on). */
         margin: ${justify ? "0" : "0.6em 0"} !important; }
-    h1, h2, h3, h4, h5, h6 { margin: 1.4em 0 0.6em !important; }
+    h1, h2, h3, h4, h5, h6 { margin: 0.7em 0 0.5em !important; }
     p + p { ${justify ? "text-indent: 1.5em !important;" : ""} }
     a { color: ${accent} !important; }
     html { -webkit-text-size-adjust: 100%; }
