@@ -154,7 +154,12 @@ function applyStyles() {
            ${justify ? `text-align: justify !important; -webkit-hyphens: auto !important; hyphens: auto !important;
              -webkit-hyphenate-limit-before: 3 !important; -webkit-hyphenate-limit-after: 3 !important;
              hyphenate-limit-chars: 6 3 3 !important; text-wrap: pretty !important;` : "text-align: left !important;"} }
-    p { widows: 2 !important; orphans: 2 !important; }
+    p { widows: 2 !important; orphans: 2 !important;
+        /* Calibre books ship p{margin:1em 0} — margins stack at page breaks as
+           dead space at the top of every page. Normalize: justified = indent
+           convention (no gaps); left = modest spacing (no indent to collapse on). */
+        margin: ${justify ? "0" : "0.6em 0"} !important; }
+    h1, h2, h3, h4, h5, h6 { margin: 1.4em 0 0.6em !important; }
     p + p { ${justify ? "text-indent: 1.5em !important;" : ""} }
     a { color: ${accent} !important; }
     html { -webkit-text-size-adjust: 100%; }
